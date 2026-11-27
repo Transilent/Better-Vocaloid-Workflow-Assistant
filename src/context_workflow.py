@@ -68,7 +68,7 @@ def _check_record_capacity(data):
 
 
 def requested(request):
-    from project_exports import context_requested
+    from project_io import context_requested
     return context_requested(request)
 
 
@@ -79,7 +79,7 @@ def _number(value):
 
 
 def _notes(path):
-    from project_exports import read_ustx
+    from project_io import read_ustx
     data = read_ustx(path)
     if not isinstance(data, dict):
         raise ValueError('语境输入不是有效USTX。')
@@ -116,7 +116,7 @@ def _notes(path):
 
 def collect_evidence(job, request):
     """Bind current score facts to verbatim lyrics; accept only verified timing."""
-    from project_exports import voices_for
+    from project_io import voices_for
     job = Path(job).resolve()
     words = request.get('context_word_spans')
     if words is None:
@@ -164,7 +164,7 @@ def _plan_path(job, request):
 
 
 def _baseline(job, request):
-    from project_exports import read_receipts, cached_output, project_signatures
+    from export_receipts import read_receipts, cached_output, project_signatures
     if 'svp' not in request.get('project_formats', []):
         return {'status': 'not_selected'}
     path = _path(job, 'exports/voices.svp')
@@ -257,7 +257,7 @@ def prepare_context(job, request, *, refresh_draft=False):
 
 def export_context(job, request):
     """Commit advice independently after base project export; never write SVP."""
-    from project_exports import read_receipts, cached_output, commit_receipt
+    from export_receipts import read_receipts, cached_output, commit_receipt
     from task_contract import index_export
     job = Path(job).resolve()
     evidence, plan, baseline, signature, proposal, proposal_source = _inputs(job, request)
@@ -294,7 +294,7 @@ def export_context(job, request):
 
 
 def outputs_intact(job, request):
-    from project_exports import read_receipts, cached_output
+    from export_receipts import read_receipts, cached_output
     try:
         evidence, plan, baseline, signature, proposal, proposal_source = _inputs(Path(job).resolve(), request)
         receipts = read_receipts(Path(job))

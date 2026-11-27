@@ -1,6 +1,6 @@
 # 结构说明
 
-[English](Architecture.en.md) | [简体中文](Architecture.zh-CN.md) | [README](../README.zh-CN.md)
+[English](Architecture.en.md) | [简体中文](Architecture.zh-CN.md) | [开发者指南](DeveloperGuide.zh-CN.md) | [AMD 显卡适配](AmdGpuAdaptation.zh-CN.md) | [README](../README.zh-CN.md)
 
 ## 处理流程
 
@@ -12,7 +12,7 @@ BV / 链接先读取来源并下载；本地音乐先保存副本。两者统一
 
 可选 BS-RoFormer 使用相同的第一级分离，其原权重从总人声估计主唱，再用总人声减主唱得到和声。不会因为主唱音量小而交换声部。中日文的分离参数相同：44.1 kHz 立体声、20 秒切片、75% 重叠、批量 1、不启用 TTA、不独立归一化声部。
 
-Quick 侧栏包括准备、调音、简易混音、合成视频、发布，以及模型与组件、任务与结果、设置与支持。调音、混音是连续工作区；切页不销毁控制器或正在进行的试听。准备和发布以步骤组织。旧任务和工作流记录继续由共享服务读取，处理任务仍在隔离子进程中运行。
+Quick 侧栏包含 11 个工作区：一键准备、调音工作台、调音工坊、修音工作台（合唱/对齐/音高精修）、简易混音、视频合成、发布准备、工程格式互转，以及模型与组件、任务与结果、设置与支持。主舞台 `WorkspaceStage.qml` 采用 4 页 LRU 保活，切换高频工作区时保留控制器与试听会话。旧任务和工作流记录继续由共享服务读取，处理任务仍在隔离子进程（受 Win32 Job Object 约束）中运行。
 
 日语保留原 Romaji ASR 权重。集成层保留切片边界的受支持音素、检查 HubertFA 输入，并按片段隔离可恢复的数据错误；对齐报告区分 ASR 为空与对齐失败。日语短音节修复只跨越不超过 150 毫秒的间隙；不发声音节也消耗对应假名，避免后续歌词错位。中文继续使用 Qwen。
 
@@ -31,7 +31,7 @@ Qt Quick 使用共享主题、语义配色和缓存背景。窗口保留系统�
 | [style_catalog.py](../src/style_catalog.py)、[expression_controls.py](../src/expression_controls.py) | GUI、MCP、草稿和执行层共用风格元数据及表现参数规格；旧 ID 配方与各用途步长保留 |
 | [multi_file_commit.py](../src/multi_file_commit.py)、`vocal_partition.py` | 相关输出统一备份、发布、验证和失败恢复；回执完成后才清理恢复副本 |
 | `roformer.py` | 可选 Pymss 推理，保留主唱、和声完整时间线 |
-| `common.py`、`check_dependencies.py` | 路径、配置、进程取消、共享单字节文件锁、依赖校验 |
+| `common.py`、`vwa_paths.py`、`vwa_io.py`、`vwa_net.py`、`vwa_config.py`、`process_control.py`、`check_dependencies.py` | 零循环依赖基础层：路径、原子读写、代理隔离、Schema v2 自愈配置、纯 `ctypes` Win32 Job Object 进程树托管、依赖校验 |
 | `pipeline.py` | 输入副本、来源、下载、阶段、续跑 |
 | `workflow.py`、`preparation_commands.py`、`quick_ui/PreparationPage.qml` | 旧预设迁移、步骤卡片与参数复用 |
 | `quick_tuning.py`、`tuning_workflow.py`、`tuning_engine.py` | 独立调音页面、固定输入会话、互斥来源组合、统一加密和候选提交保护 |
@@ -45,7 +45,11 @@ Qt Quick 使用共享主题、语义配色和缓存背景。窗口保留系统�
 | `cover_art.py`、`publication.py` | 原始封面、补边、发布包 |
 | `quick_publication.py`、`publish_browser.py` | 登录及上传填写 |
 | `publish-selectors.json` | 平台页面选择器 |
-| `tools/build_portable.py` | 按清单构建 ZIP 和分卷 |
+| `tools/build_portable.py`、`tools/generate_sbom.py`、`tools/extract_i18n.py` | 按清单构建 ZIP/分卷、CycloneDX SBOM 与 `SHA256SUMS.txt`、中/英/日三语静态覆盖率审计 |
+| `task_index.py`、`crash_dump.py`、`worker_runner.py` | 可重建 WAL SQLite 任务索引读缓存、Windows MiniDump/`faulthandler` 崩溃收集、统一子进程运行器 |
+| `tutorial_catalog.py`、`workspace_ui_state.py`、`draft_recovery.py`、`win_taskbar.py`、`recent_items.py`、`quick_ux_hub.py` | 11 步教程/分流卡真相源、多屏安全窗口记忆、15s 防抖崩溃恢复草稿、Win32 `ITaskbarList3` 任务栏进度、全局 MRU 与窗口级智能拖放 |
+| `audio_device_recovery.py`、`mirror_probe.py`、`preparation_queue.py`、`src/native/` | WASAPI 播放设备枚举与热插拔自动重连、Happy Eyeballs 并发镜像测速、多曲准备队列、CMake 原生音频 DLL |
+| `quick_chorus.py`、`chorus_*.py`、`quick_convert.py`、`project_convert_service.py` | 修音/合唱工作台（Signalsmith 音高/时序引擎）与独立多格式歌声工程互转 |
 
 ## 配置与数据
 

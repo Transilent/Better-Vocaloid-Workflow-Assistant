@@ -1,6 +1,6 @@
 # Architecture
 
-[English](Architecture.en.md) | [简体中文](Architecture.zh-CN.md) | [README](../README.md)
+[English](Architecture.en.md) | [简体中文](Architecture.zh-CN.md) | [Developer Guide (ZH)](DeveloperGuide.zh-CN.md) | [AMD GPU Guide (ZH)](AmdGpuAdaptation.zh-CN.md) | [README](../README.md)
 
 ## Processing flow
 
@@ -22,7 +22,7 @@ backing. It does not treat low lead energy as a reason to swap parts. Chinese an
 Japanese use identical separation parameters: 44.1 kHz stereo, 20-second chunks,
 75% overlap, batch size 1, no TTA and no independent stem normalization.
 
-The Quick sidebar contains Preparation, Tuning, Simple Mix, Video, Publishing, Components, Results and Settings. Tuning and mixing retain their controllers across navigation. Preparation and Publishing use short steps, and the processing pipeline still runs in isolated children.
+The Quick sidebar hosts 11 workspaces: Preparation, Tuning, Tuning Workshop, Chorus, Simple Mix, Video, Publishing, Project Format Converter, Components, Results, and Settings. `WorkspaceStage.qml` keeps the 4 most recently visited pages alive (LRU) while controllers and active audio playback persist across navigation. Processing and inference tasks run in isolated child processes guarded by Win32 Job Objects (`process_control.py`).
 
 
 Japanese transcription uses the original bundled Romaji ASR weights. The integration preserves supported standalone phones at slice boundaries, checks HubertFA input phonemes, isolates recoverable alignment data errors by chunk, and records pitch-only fallbacks separately from empty ASR. Short-mora boundary repair is limited to 150 ms gaps in Japanese. Non-singing mora tokens consume their kana display token so subsequent syllables stay aligned. Chinese ASR selection remains Qwen.
@@ -42,7 +42,7 @@ Qt Quick uses shared theme tokens and a cached background. The system frame offe
 | [style_catalog.py](../src/style_catalog.py), [expression_controls.py](../src/expression_controls.py) | Shared style metadata and expression specifications for GUI, MCP, drafts and execution; preserve legacy recipes and purpose-specific steps |
 | [multi_file_commit.py](../src/multi_file_commit.py), `vocal_partition.py` | Back up, publish, validate and restore related outputs together; retain recovery copies until receipts are complete |
 | `roformer.py` | Optional Pymss inference and timeline-preserving lead/backing outputs |
-| `common.py`, `check_dependencies.py` | Relative paths, configuration, subprocess cancellation, shared one-byte sidecar locking, dependency checks |
+| `common.py`, `vwa_paths.py`, `vwa_io.py`, `vwa_net.py`, `vwa_config.py`, `process_control.py`, `check_dependencies.py` | Zero-SCC foundation: relative paths, atomic I/O, proxy-isolated networking, Schema v2 self-healing config, pure-`ctypes` Win32 Job Object process trees, dependency checks |
 | `pipeline.py` | Input snapshots, metadata, downloads, stages, resume |
 | `workflow.py`, `preparation_commands.py`, `quick_ui/PreparationPage.qml` | Preset migration and ordered processing cards |
 | `quick_tuning.py`, `tuning_workflow.py`, `tuning_engine.py` | Independent tuning UI, immutable source sessions, exclusive parameter-source composition, one final density pass and protected candidate commits |
@@ -56,7 +56,11 @@ Qt Quick uses shared theme tokens and a cached background. The system frame offe
 | `cover_art.py`, `publication.py` | Original covers, padded variants, publication bundles |
 | `quick_publication.py`, `publish_browser.py` | Local publication handoff and Bilibili-only browser assistance |
 | `publish-selectors.json` | Platform page selectors |
-| `tools/build_portable.py` | Inventory-based ZIP creation and splitting |
+| `tools/build_portable.py`, `tools/generate_sbom.py`, `tools/extract_i18n.py` | Inventory-based ZIP/split packaging, CycloneDX SBOM & `SHA256SUMS.txt`, and EN/JA i18n coverage audit |
+| `task_index.py`, `crash_dump.py`, `worker_runner.py` | Rebuildable WAL SQLite task read-cache, Windows MiniDump/`faulthandler` diagnostics, unified subprocess runner |
+| `tutorial_catalog.py`, `workspace_ui_state.py`, `draft_recovery.py`, `win_taskbar.py`, `recent_items.py`, `quick_ux_hub.py` | 11-workspace onboarding catalog, multi-monitor-safe window/route memory, 15s crash-safe draft recovery, Win32 `ITaskbarList3` progress, global MRU & smart window drop |
+| `audio_device_recovery.py`, `mirror_probe.py`, `preparation_queue.py`, `src/native/` | WASAPI playback device enumeration & hot-swap reconnect, Happy Eyeballs mirror racing, multi-song prep queue, CMake native audio DLLs |
+| `quick_chorus.py`, `chorus_*.py`, `quick_convert.py`, `project_convert_service.py` | Chorus vocal pitch/timing workbench (Signalsmith engine) and standalone singing-project format converter |
 
 ## Files and state
 

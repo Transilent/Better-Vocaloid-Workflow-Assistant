@@ -338,15 +338,35 @@ def split(archive, size_mib):
     return parts
 
 
-def write_release_metadata(report, folder, migration=None):
+DEFAULT_FULL_PACKAGE_NOTICE = (
+    '本次更新包含更新器核心、运行库与基础设施升级，请前往发布页下载最新完整便携包。'
+    '迁移时请保留原目录中的 jobs、config.json 与 user-presets，即可完整保留任务与个人设置。'
+)
+
+
+def write_release_metadata(report, folder, migration=None, *, full_package_required=False,
+                           full_package_notice='', min_inplace_version='', runtime_patches=None):
     """Finalize existing archives without rebuilding the large portable ZIP."""
     if report.get('variant', 'full') != 'full':
         raise ValueError('JPN portable metadata must stay separate from the full update catalog')
     folder = Path(folder).resolve()
     version = json.loads(inventory_path('version.json').read_text(encoding='utf-8'))['version']
     runtime_sha = digest(ROOT / 'dependencies/manifest.json')
+    notes = release_notes(version)
+    notice = str(full_package_notice or '').strip()
+    if full_package_required:
+        notice = notice or DEFAULT_FULL_PACKAGE_NOTICE
+        banner = f'【重要 · 本次需要全量更新】\n{notice}\n\n'
+        if not notes.startswith('【重要'):
+            notes = banner + notes
     public = {'version': version, 'archive': report['archive'], 'parts': report['parts'],
-              'release_notes': release_notes(version), 'layout_root': report.get('layout_root', DEFAULT_LAYOUT_ROOT)}
+              'release_notes': notes, 'layout_root': report.get('layout_root', DEFAULT_LAYOUT_ROOT)}
+    if full_package_required:
+        public['full_package_required'] = True
+        public['full_package_notice'] = notice
+        public['min_inplace_version'] = str(min_inplace_version or version)
+    elif min_inplace_version:
+        public['min_inplace_version'] = str(min_inplace_version)
     from tools.update_apply import validate_destination
     destination = validate_destination(folder, 'release-assets.json')
     existing = json.loads(destination.read_text(encoding='utf-8')) if destination.is_file() else None
@@ -355,22 +375,45 @@ def write_release_metadata(report, folder, migration=None):
         if migration or (existing is not None and 'updates' in existing):
             raise ValueError('Publish Quick releases separately from historical Widgets runtime migration catalogs.')
         from tools.build_app_update import build as build_app_update
-        from tools.update_apply import desktop_identity, validate_quick_program
-        program = folder / 'VWA-Program-Update.zip'
-        if program.is_file():
-            with zipfile.ZipFile(program) as zipped:
-                inventory = json.loads(zipped.read('update-inventory.json'))
-            if (inventory['version'] != version or inventory['runtime_sha256'] != runtime_sha
-                    or desktop_identity(inventory) != identity):
-                raise ValueError('Existing Quick program archive does not match this release.')
-            validate_quick_program(item['file'] for item in inventory['entries'])
-            update = {'name': program.name, 'bytes': program.stat().st_size, 'sha256': digest(program),
-                      'runtime_sha256': runtime_sha, **identity}
-        else:
-            update = build_app_update(program)
+        from tools.update_apply import desktop_identity, runtime_patch_name, validate_quick_program
         from common import atomic_json
-        public.update(program_update=update, **identity)
+        public.update(**identity)
+        if not full_package_required:
+            program = folder / 'VWA-Program-Update.zip'
+            if program.is_file():
+                with zipfile.ZipFile(program) as zipped:
+                    inventory = json.loads(zipped.read('update-inventory.json'))
+                if (inventory['version'] != version or inventory['runtime_sha256'] != runtime_sha
+                        or desktop_identity(inventory) != identity):
+                    raise ValueError('Existing Quick program archive does not match this release.')
+                validate_quick_program(item['file'] for item in inventory['entries'])
+                update = {'name': program.name, 'bytes': program.stat().st_size, 'sha256': digest(program),
+                          'runtime_sha256': runtime_sha, **identity}
+            else:
+                update = build_app_update(program)
+            public['program_update'] = update
+            if runtime_patches:
+                verified_patches = []
+                for patch_path in runtime_patches:
+                    p = Path(patch_path).resolve()
+                    runtime_patch_name({'name': p.name})
+                    with zipfile.ZipFile(p) as zipped:
+                        pdoc = json.loads(zipped.read('runtime-patch.json'))
+                    if (pdoc.get('version') != version or desktop_identity(pdoc) != identity
+                            or pdoc.get('target_runtime_sha256') != runtime_sha):
+                        raise ValueError('Runtime patch does not match this release: ' + p.name)
+                    verified_patches.append({
+                        'name': p.name,
+                        'bytes': p.stat().st_size,
+                        'sha256': digest(p),
+                        'source_runtime_sha256': pdoc['source_runtime_sha256'],
+                        'target_runtime_sha256': runtime_sha,
+                        **identity,
+                    })
+                public['runtime_patches'] = verified_patches
         atomic_json(destination, public)
+        from tools.generate_sbom import write_release_supply_chain
+        write_release_supply_chain(ROOT, folder)
         return public
     if isinstance(existing, dict) and 'updates' in existing:
         # Adding portable downloads must not silently replace a verified
@@ -670,6 +713,14 @@ def main(argv=None):
     parser.add_argument('--compression', type=int, choices=range(10), default=6)
     parser.add_argument('--split-mib', type=int, default=0)
     parser.add_argument('--migration-metadata', type=Path, help='Verified runtime-upgrade.build.json for legacy online upgrades')
+    parser.add_argument('--full-package-required', action='store_true',
+                        help='Push a universal full-package update notice to all existing clients (omit in-place update assets)')
+    parser.add_argument('--full-package-notice', default='',
+                        help='Custom Chinese migration guidance prepended to release notes when --full-package-required is set')
+    parser.add_argument('--min-inplace-version', default='',
+                        help='Minimum installed version eligible for in-place updates; older clients are guided to full package')
+    parser.add_argument('--runtime-patch', dest='runtime_patches', type=Path, action='append', default=[],
+                        help='Verified VWA-Runtime-Patch*.zip archive(s) to advertise for 2.x clients')
     parser.add_argument('--user-test-confirmed', action='store_true', help='Use only after explicit user testing confirmation')
     parser.add_argument('--candidate-build', action='store_true',
                         help='Build an explicitly unaccepted local candidate under a candidates directory')
@@ -724,7 +775,13 @@ def main(argv=None):
     if args.split_mib:
         report['parts'] = split(args.output.resolve(), args.split_mib)
         if not args.candidate_build and not args.portable_metadata:
-            write_release_metadata(report, args.output.resolve().parent, args.migration_metadata)
+            write_release_metadata(
+                report, args.output.resolve().parent, args.migration_metadata,
+                full_package_required=args.full_package_required,
+                full_package_notice=args.full_package_notice,
+                min_inplace_version=args.min_inplace_version,
+                runtime_patches=args.runtime_patches,
+            )
     if args.candidate_build:
         report = write_candidate_marker(report, args.output, args.base_sha256)
     if args.portable_metadata:

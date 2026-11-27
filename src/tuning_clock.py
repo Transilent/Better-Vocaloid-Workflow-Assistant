@@ -2,8 +2,45 @@
 
 from bisect import bisect_right
 from dataclasses import dataclass
+import math
 
-from vocal_expression import SV_QUARTER, TempoMap
+SV_QUARTER = 705600000
+
+
+class TempoMap:
+    """Convert musical positions and seconds about content time zero."""
+
+    def __init__(self, tempos):
+        if not isinstance(tempos, (list, tuple)) or any(
+                not isinstance(row, dict) or type(row.get('position')) is not int for row in tempos):
+            raise ValueError('工程速度表的位置格式无效。')
+        tempos = sorted(tempos, key=lambda item: item['position'])
+        if not tempos or tempos[0]['position'] > 0:
+            raise ValueError('工程速度表需要覆盖内容起点。')
+        self.positions, self.bpms, self.seconds = [], [], []
+        elapsed = 0.
+        for item in tempos:
+            position, bpm = item['position'], item['bpm']
+            if type(position) is not int or type(bpm) not in (int, float) or not math.isfinite(bpm) or bpm <= 0:
+                raise ValueError('SVP 速度表包含无效数值。')
+            if self.positions:
+                if position <= self.positions[-1]:
+                    raise ValueError('SVP 速度表包含重复位置。')
+                elapsed += (position - self.positions[-1]) / SV_QUARTER * 60 / self.bpms[-1]
+            self.positions.append(position)
+            self.bpms.append(bpm)
+            self.seconds.append(elapsed)
+        zero = self.to_seconds(0)
+        if zero:
+            self.seconds = [seconds - zero for seconds in self.seconds]
+
+    def to_seconds(self, position):
+        index = max(0, bisect_right(self.positions, position) - 1)
+        return self.seconds[index] + (position - self.positions[index]) / SV_QUARTER * 60 / self.bpms[index]
+
+    def to_position(self, seconds):
+        index = max(0, bisect_right(self.seconds, seconds) - 1)
+        return round(self.positions[index] + (seconds - self.seconds[index]) * self.bpms[index] / 60 * SV_QUARTER)
 
 
 @dataclass(frozen=True)

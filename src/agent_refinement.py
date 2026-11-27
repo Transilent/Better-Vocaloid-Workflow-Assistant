@@ -11,7 +11,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
-from agent_control import ControlError,atomic_json,file_hash,io_path,safe_path
+from agent_primitives import ControlError,atomic_json,file_hash,io_path,safe_path
 from agent_exports import candidate_path_for,_publish_exclusive,_existing_file,_digest
 from agent_export_audit import audit_export
 

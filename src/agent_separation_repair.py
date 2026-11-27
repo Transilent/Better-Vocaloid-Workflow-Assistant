@@ -11,6 +11,7 @@ import copy
 from contextlib import ExitStack
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -68,8 +69,7 @@ class SeparationRepairError(RuntimeError):
         }
 
 
-def _digest(value):
-    return agent_preparation._digest(value)
+from agent_primitives import json_digest as _digest
 
 
 def _json_bytes(value, *, pretty=False):
@@ -665,8 +665,8 @@ def _mark_failure(job, plan, error, *, cancelled=False):
         try:
             import task_contract
             task_contract.fail_stage(job, "separation", state, error)
-        except Exception:
-            pass
+        except Exception as exc:
+            logging.getLogger(__name__).debug("record separation failure stage skipped: %s", exc)
 
 
 def _source_evidence(plan, job, copied):

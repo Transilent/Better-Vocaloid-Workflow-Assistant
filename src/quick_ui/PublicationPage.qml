@@ -161,13 +161,11 @@ Item {
         return page.controller.text("本家原始封面");
     }
 
-    Dialog {
+    UiDialog {
         id: creditDialog
         objectName: "publicationCreditDialog"
-        parent: Overlay.overlay
-        anchors.centerIn: parent
+        theme: page.theme
         width: Math.min(parent.width - 32, 490 * page.theme.scale)
-        modal: true
         title: page.controller.text("生成标题和署名")
         ColumnLayout {
             anchors.fill: parent
@@ -195,8 +193,9 @@ Item {
                 placeholderText: page.controller.text("本次调音署名")
                 maximumLength: 80
             }
-            CheckBox {
+            UiCheckBox {
                 id: creditAll
+                theme: page.theme
                 visible: page.selectedPlatforms.length > 1
                 text: page.controller.text("同时应用到已选平台")
             }
@@ -226,14 +225,12 @@ Item {
         }
     }
 
-    Dialog {
+    UiDialog {
         id: browserLog
         objectName: "publicationBrowserLogDialog"
-        parent: Overlay.overlay
-        anchors.centerIn: parent
+        theme: page.theme
         width: Math.min(parent.width - 36, 760 * page.theme.scale)
         height: Math.min(parent.height - 40, 450 * page.theme.scale)
-        modal: true
         title: page.controller.text("B站填写日志")
         standardButtons: Dialog.Close
         onAboutToShow: logText.text = page.controller.browserLogTail()
@@ -841,8 +838,8 @@ Item {
                                 Text {
                                     anchors.centerIn: parent
                                     text: index < page.step ? "✓" : String(index + 1)
-                                    color: index === page.step ? page.theme.onAccent
-                                        : index < page.step ? page.theme.base : page.theme.muted
+                                    color: index === page.step ? page.theme.accentInk
+                                        : index < page.step ? page.theme.accentInk : page.theme.muted
                                     font.pixelSize: Math.round(10 * page.theme.scale)
                                     font.weight: Font.DemiBold
                                 }
@@ -1699,7 +1696,8 @@ Item {
                             textFormat: Text.PlainText
                         }
 
-                        ProgressBar {
+                        UiProgressBar {
+                            theme: page.theme
                             Layout.fillWidth: true
                             visible: page.busy
                             indeterminate: !page.theme.reduceMotion

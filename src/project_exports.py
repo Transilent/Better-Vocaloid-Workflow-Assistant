@@ -13,97 +13,26 @@ from common import atomic_json, cancelled, file_hash, resolve_tools, preserve_ch
 from artifact_cache import fingerprint
 from preparation_languages import lyric_continuation
 
-PROJECT_FORMATS=('ustx','vsqx','svp')
-AUDIO_FORMATS=('wav','flac','mp3','ogg')
 SVP_LANGUAGES = {'zh': 'mandarin', 'ja': 'japanese', 'en': 'english'}
 # Bank and program from Yamaha's English CYBER DIVA demonstration project.
 ENGLISH_VSQX_VOICE = {'default_lang_id': 1, 'default_comp_id': 'BCLPDYL3MBTL2CD5',
                       'default_singer_name': 'CYBER_DIVA'}
 ENGLISH_VSQX_PROGRAM = 4
+JAPANESE_VSQX_VOICE = {'default_lang_id': 0, 'default_comp_id': 'BCX538C32N675365',
+                       'default_singer_name': 'VY1V4'}
 
 
-def context_requested(request):
-    """Inspect optional settings before importing the independent context layer."""
-    enabled = request.get('context_enabled', False)
-    if type(enabled) is not bool:
-        raise ValueError('context_enabled必须为布尔值。')
-    plan = request.get('context_plan')
-    if plan is not None and (not isinstance(plan, str) or not plan.strip()):
-        raise ValueError('context_plan必须为非空计划文件路径。')
-    return enabled or plan is not None
-
-
-def voices_for(request):
-    return ('vocals',) if request.get('voice_mode') == 'single' else ('lead', 'backing')
-
-
-def read_receipts(job):
-    try:
-        data = json.loads((job / 'exports/receipts.json').read_text(encoding='utf-8'))
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
-
-
-def project_input(job, request):
-    instrumental = job/'audio/instrumental.wav'
-    pitch = bool(request.get('export_pitch',False))
-    folders = {v: job/'midi'/('' if v=='vocals' else v) for v in voices_for(request)}
-    return fingerprint({'schema': 4, 'language': request['language'], 'pitch': pitch,
-        'native': {v: file_hash(folder/(v+'.ustx')) for v,folder in folders.items()},
-        'absolute_pitch': {v: file_hash(folder/(v+'.pitch.npz')) for v,folder in folders.items()
-                           if pitch and (folder/(v+'.pitch.npz')).is_file()},
-        'pitch_receipts': {v: file_hash(folder/'report.json') for v,folder in folders.items()
-                           if pitch and (folder/'report.json').is_file()},
-        'pitch_adapter': file_hash(Path(__file__).with_name('pitch_accuracy.py')) if pitch else None,
-        'instrumental': file_hash(instrumental) if request.get('include_instrumental',True) and instrumental.is_file() else None,
-        'converter': file_hash(Path(__file__))})
-
-
-def project_signatures(job, request):
-    """Expression settings affect SVP export, never MIDI inference or other formats."""
-    from vocal_expression import expression_settings
-    enabled, strength, timbre = expression_settings(request)
-    from calibration_refinement import density_settings
-    density_mode=density_settings(request)
-    base = project_input(job, request)
-    signatures = {fmt: fingerprint([base, fmt]) for fmt in request.get('project_formats', [])}
-    if 'vsqx' in signatures and request.get('export_pitch'):
-        signatures['vsqx'] = fingerprint([signatures['vsqx'], file_hash(Path(__file__).with_name('vocaloid_pitch.py'))])
-    if 'vsqx' in signatures and request['language'] == 'en':
-        from vocaloid_english import DICTIONARY_PATH
-        signatures['vsqx'] = fingerprint([signatures['vsqx'], file_hash(ROOT / 'vocaloid_english.py'),
-                                           file_hash(ROOT / DICTIONARY_PATH)])
-    if 'svp' in signatures and (enabled or timbre) and strength > 0:
-        signatures['svp'] = fingerprint([base, 'svp', strength,
-            file_hash(Path(__file__).with_name('vocal_expression.py')),
-            enabled, timbre,
-            [file_hash(Path(__file__).with_name(name)) for name in ('vocal_timbre.py', 'expression_component.py')] if timbre else [],
-            {voice: file_hash(job / 'audio' / (voice + '.wav')) for voice in voices_for(request)}])
-    if request.get('reference_calibration') and 'svp' in signatures:
-        from expression_calibration import signature
-        from common import app_path
-        signatures['svp']=fingerprint([signatures['svp'],signature(app_path(request['reference_calibration'])),strength,
-            {voice:file_hash(job/'audio'/(voice+'.wav')) for voice in voices_for(request)},
-            [file_hash(Path(__file__).with_name(name)) for name in ('vocal_timbre.py','expression_component.py')]])
-    if request.get('retained_expression') and not request.get('reference_calibration') and 'svp' in signatures:
-        from calibration_workflow import retained_signature
-        signatures['svp']=fingerprint([signatures['svp'],retained_signature(job,request)])
-    if 'svp' in signatures:
-        signatures['svp']=fingerprint([signatures['svp'],density_mode,
-            [file_hash(Path(__file__).with_name(name)) for name in
-             ('tuning_engine.py','calibration_refinement.py','vocal_expression.py','expression_calibration.py','calibration_workflow.py')]])
-    return signatures
-
-
-def cached_output(job, path, signature, receipts):
-    item = receipts.get(path.relative_to(job).as_posix(), {})
-    if item.get('active') is False:
-        return None
-    try:
-        return item if item.get('input_signature') == signature and path.stat().st_size == item['bytes'] and file_hash(path) == item['sha256'] else None
-    except (OSError, KeyError):
-        return None
+from export_receipts import cached_output, commit_receipt, project_input, project_signatures, read_receipts
+from project_io import (
+    AUDIO_FORMATS,
+    PROJECT_FORMATS,
+    context_requested,
+    library,
+    read_ustx,
+    retained_signature,
+    validate_export_options as validate_options,
+    voices_for,
+)
 
 
 def _style_target(job, request, baseline):
@@ -198,16 +127,6 @@ def export_style(job, request):
     return {'status':status,'preset':preset,'strength':strength,'scope':scope,'outputs':[item]}
 
 
-def commit_receipt(job, path, signature, receipts, **details):
-    item = {'file': path.relative_to(job).as_posix(), 'bytes': path.stat().st_size,
-            'sha256': file_hash(path), 'input_signature': signature, **details}
-    receipts[item['file']] = item
-    atomic_json(job / 'exports/receipts.json', receipts)
-    from task_contract import index_export
-    index_export(job, item, replace=True)
-    return item
-
-
 def audio_inputs(job, request, receipts):
     """One bounded peak scan per input revision; all compressed stems share gain."""
     sources = {voice: job/'audio'/(voice+'.wav') for voice in (*voices_for(request),'instrumental')}
@@ -278,34 +197,13 @@ def outputs_intact(job, request):
         return False
 
 
-def validate_options(projects, audio):
-    if (not isinstance(projects,list) or not isinstance(audio,list)
-            or any(fmt not in PROJECT_FORMATS for fmt in projects)
-            or any(fmt not in AUDIO_FORMATS for fmt in audio)
-            or len(set(projects))!=len(projects) or len(set(audio))!=len(audio)):
-        raise ValueError('请选择支持的工程与音频格式。')
-
-
-def library():
-    runtime=ROOT/'dependencies/export'
-    if not (runtime/'libresvip/__init__.py').is_file():
-        raise FileNotFoundError('工程转换运行库缺失，请恢复 dependencies/export 目录。')
-    settings=ROOT/'cache/export-app'
-    settings.mkdir(parents=True,exist_ok=True)
-    os.environ['APPDATA']=os.environ['LOCALAPPDATA']=str(settings)
-    sys.path.insert(0,str(runtime))
-    from libresvip.plugins.ustx.ustx_converter import OpenUtauConverter
-    from libresvip.plugins.vsqx.vsqx_converter import VsqxConverter
-    from libresvip.plugins.svp.synthv_studio_converter import SynthVStudioConverter
-    from libresvip.model.base import Project, SingingTrack, InstrumentalTrack
-    return {'ustx':OpenUtauConverter,'vsqx':VsqxConverter,'svp':SynthVStudioConverter},Project,SingingTrack,InstrumentalTrack
-
-
 def project_output_options(fmt, language):
     if fmt == 'svp':
         return {'down_sample': 0, 'language_override': SVP_LANGUAGES[language]}
     if fmt == 'vsqx' and language == 'en':
         return ENGLISH_VSQX_VOICE.copy()
+    if fmt == 'vsqx' and language == 'ja':
+        return JAPANESE_VSQX_VOICE.copy()
     return {}
 
 
@@ -363,6 +261,13 @@ def restore_vsqx_lyrics(path, project, language):
         for element in voices + singers:
             element.find('{*}bs').text = str(ENGLISH_VSQX_VOICE['default_lang_id'])
             element.find('{*}pc').text = str(ENGLISH_VSQX_PROGRAM)
+    elif language == 'ja':
+        voices = root.findall('./{*}vVoiceTable/{*}vVoice')
+        singers = root.findall('./{*}vsTrack/{*}vsPart/{*}singer')
+        for element in voices + singers:
+            bs = element.find('{*}bs')
+            if bs is not None:
+                bs.text = str(JAPANESE_VSQX_VOICE['default_lang_id'])
     for index, rows in enumerate(_vsqx_export_rows(root, project)):
         for note, lyric, _ in rows:
             lyric.text = note.lyric
@@ -506,7 +411,7 @@ def prepare_vsqx_audio(job, request, receipts):
     """VSQX accepts only 44.1-kHz 16-bit WAV. Preserve the original float stem."""
     import numpy as np
     import soundfile as sf
-    from pipeline import run_process
+    from process_control import run_process
     source, destination = job/'audio/instrumental.wav', vsqx_audio_path(job)
     signature = vsqx_audio_signature(job)
     if saved := cached_output(job, destination, signature, receipts):
@@ -542,10 +447,7 @@ def prepare_vsqx_audio(job, request, receipts):
     finally: pending.unlink(missing_ok=True)
 
 
-def read_ustx(path):
-    """Use the same lyric and YAML rules for export verification and tuning."""
-    from ustx_tuning import read
-    return read(path.read_bytes(), require_version=False)
+# read_ustx re-exported from project_io above.
 
 
 def english_ustx_input_options(language):
@@ -834,7 +736,7 @@ def export_projects(job, request):
 
 
 def export_audio(job, request):
-    from pipeline import run_process
+    from process_control import run_process
     formats=request.get('audio_formats',['wav'])
     if not formats:
         return []

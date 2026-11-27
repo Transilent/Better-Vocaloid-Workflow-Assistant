@@ -208,7 +208,7 @@ def download(item, folder, progress, check=None, opener=direct_urlopen, source='
             partial.replace(target)
             segments=folder/(name+'.segments')
             if segments.exists():
-                from task_store import checked_tree
+                from vwa_io import checked_tree
                 checked_tree(segments,folder)
                 shutil.rmtree(segments)
             trace.record('succeeded', item['bytes'])
@@ -456,6 +456,8 @@ def install(runtime, progress=print, check=None, root=COMPONENT, force=False, so
         replace_verified_tree(stage, destination, backup, root, _directory_ready)
         for path in downloads:
             path.unlink(missing_ok=True)
+        # Also remove stale archives and parallel-download .segments dirs left by earlier runs.
+        remove_owned_tree(root / 'downloads', root)
         progress(total, total, '安装完成，可以使用 BS-RoFormer')
         return status(root)
 

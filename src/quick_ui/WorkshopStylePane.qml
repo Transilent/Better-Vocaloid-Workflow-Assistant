@@ -111,7 +111,7 @@ Item {
             UiIcon {
                 anchors.centerIn: parent
                 glyph: "check"
-                tint: pane.theme.onAccent
+                tint: pane.theme.accentInk
                 width: parent.width - 2
                 height: width
                 visible: option.checked
@@ -137,15 +137,13 @@ Item {
         nameFilters: sourceFile.nameFilters
         onAccepted: pane.controller.loadComparison(selectedFile)
     }
-    Dialog {
+    UiDialog {
         id: coverageDialog
         objectName: "styleReferenceCoverageDialog"
-        parent: Overlay.overlay
-        anchors.centerIn: parent
+        theme: pane.theme
         width: Math.min(parent.width - 48 * pane.unit, 650 * pane.unit)
         height: Math.min(parent.height - 54 * pane.unit, 414 * pane.unit)
         title: pane.label("干声逐音符覆盖")
-        modal: true
         standardButtons: Dialog.Close
         contentItem: ColumnLayout {
             Hint {

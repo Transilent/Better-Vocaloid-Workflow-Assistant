@@ -1,7 +1,7 @@
 """Sequential Agent review over bounded MIDI and style segments."""
 from __future__ import annotations
 import copy
-from agent_control import ControlError
+from agent_primitives import ControlError
 
 def enabled(value):return value.get('request',{}).get('review_mode')=='segments'
 

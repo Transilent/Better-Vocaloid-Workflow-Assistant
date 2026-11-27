@@ -291,6 +291,13 @@ def _report_state(report, fingerprints, max_shift):
     return 'usable'
 
 
+_STILL_IMAGE_SUFFIXES = frozenset(('.png', '.jpg', '.jpeg', '.webp', '.bmp'))
+
+
+def _is_still_image(path: Path) -> bool:
+    return path.suffix.lower() in _STILL_IMAGE_SUFFIXES
+
+
 def _render(job, video, mixdown, output, *, offset=None, reference=None, normalize=False,
             max_shift=30, alignment_report=None, progress=None):
     from pipeline import run_process
@@ -365,6 +372,9 @@ def _render(job, video, mixdown, output, *, offset=None, reference=None, normali
 
     ffmpeg = load_config()['ffmpeg']
     output.parent.mkdir(parents=True, exist_ok=True)
+    from storage import require_free_space
+    min_space = max(256 * 1024**2, mixdown.stat().st_size * 2 + 128 * 1024**2)
+    require_free_space(output.parent, min_space, '合成视频')
     (job / 'temp').mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='video-mix-', dir=job/'temp') as folder:
         folder = Path(folder)
@@ -389,16 +399,31 @@ def _render(job, video, mixdown, output, *, offset=None, reference=None, normali
             filters.append('loudnorm=I=-14:TP=-1:LRA=11:linear=true:measured_I={input_i}:'
                 'measured_TP={input_tp}:measured_LRA={input_lra}:measured_thresh={input_thresh}:'
                 'offset={target_offset}'.format(**loudness))
-        filters.append('apad')  # Keep the full video when the mix has a shorter tail.
+        still_image = _is_still_image(video)
+        if not still_image:
+            filters.append('apad')  # Keep the full video when the mix has a shorter tail.
         pending = output.with_name(output.stem+'.pending.mp4')
         if pending.exists():
             raise FileExistsError('发现同名合成临时文件，请选择其他输出文件名。')
         try:
-            ffmpeg_step([ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', '-n',
-                         '-i', str(video), '-i', str(mixdown), '-map', '0:v:0', '-map', '1:a:0',
-                         '-c:v', 'copy', '-af', ','.join(filters), '-c:a', 'aac', '-b:a', '320k',
-                         '-ar', '44100', '-shortest', '-movflags', '+faststart', str(pending)],
-                        'mix_video', 'muxing', '正在合成视频和混音音轨…')
+            if still_image:
+                mux_cmd = [
+                    ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', '-n',
+                    '-loop', '1', '-framerate', '30', '-i', str(video),
+                    '-i', str(mixdown), '-map', '0:v:0', '-map', '1:a:0',
+                    '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+                    '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'stillimage', '-pix_fmt', 'yuv420p',
+                    '-af', ','.join(filters), '-c:a', 'aac', '-b:a', '320k',
+                    '-ar', '44100', '-shortest', '-movflags', '+faststart', str(pending),
+                ]
+            else:
+                mux_cmd = [
+                    ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', '-n',
+                    '-i', str(video), '-i', str(mixdown), '-map', '0:v:0', '-map', '1:a:0',
+                    '-c:v', 'copy', '-af', ','.join(filters), '-c:a', 'aac', '-b:a', '320k',
+                    '-ar', '44100', '-shortest', '-movflags', '+faststart', str(pending),
+                ]
+            ffmpeg_step(mux_cmd, 'mix_video', 'muxing', '正在合成视频和混音音轨…')
             # Decode both mapped streams before exposing a finished video.
             ffmpeg_step([ffmpeg, '-nostdin', '-v', 'error', '-xerror', '-i', str(pending),
                          '-map', '0:v:0', '-map', '0:a:0', '-f', 'null', '-'],
@@ -416,7 +441,7 @@ def _render(job, video, mixdown, output, *, offset=None, reference=None, normali
             pending.unlink(missing_ok=True)
     report = {'version': 1, 'output': str(output), 'sha256': file_hash(output), 'inputs': path_hashes,
               'alignment': measured, 'normalized': bool(normalize), 'loudness_measurement': loudness,
-              'video_policy': 'copy_full_video_replace_original_audio'}
+              'video_policy': 'still_image_loop_full_audio' if still_image else 'copy_full_video_replace_original_audio'}
     atomic_json(output.with_suffix('.mixdown.json'), report)
     return report
 

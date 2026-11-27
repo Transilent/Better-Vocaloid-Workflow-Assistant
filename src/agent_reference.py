@@ -46,28 +46,18 @@ _PITCH_MEMBERS = {"midi_pitch.npy", "voiced_mask.npy", "time_step.npy", "schema.
 _PITCH_ARRAY_KEYS = {name.removesuffix(".npy") for name in _PITCH_MEMBERS}
 
 
-def _io_path(path: Any) -> Path:
-    return Path(native_path(path))
+from agent_primitives import (
+    canonical_json_bytes as _canonical_bytes,
+    finite_number as _finite_number,
+    io_path as _io_path,
+)
 
 
 def _sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def _canonical_bytes(value: Any, *, pretty: bool = False) -> bytes:
-    options = {
-        "ensure_ascii": False,
-        "allow_nan": False,
-        "sort_keys": True,
-    }
-    if pretty:
-        options["indent"] = 2
-    else:
-        options["separators"] = (",", ":")
-    text = json.dumps(value, **options)
-    if pretty:
-        text += "\n"
-    return text.encode("utf-8")
+# _canonical_bytes imported from agent_primitives above.
 
 
 def _canonical_digest(value: Any) -> str:
@@ -132,13 +122,7 @@ def _strict_int(value: Any, label: str, *, minimum: int = 0, maximum: int | None
     return value
 
 
-def _finite_number(value: Any, label: str) -> float:
-    if type(value) not in (int, float):
-        raise ValueError(f"{label} 必须是有限数值。")
-    number = float(value)
-    if not math.isfinite(number):
-        raise ValueError(f"{label} 必须是有限数值。")
-    return number
+# _finite_number imported from agent_primitives above.
 
 
 def _parse_pcm_header(path: Path, file_size: int) -> dict[str, Any]:

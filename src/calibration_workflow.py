@@ -271,7 +271,7 @@ def retain_parameters(target, source, *, track_index=0, source_track_index=0,
     tuning engine's pure retained route calls :func:`retain_project` directly
     and therefore defaults to exact matching.
     """
-    from calibration_session import project_data
+    from project_io import project_data
     target,source=Path(target).resolve(),Path(source).resolve()
     if target==source:raise ValueError('请为保留参数的新版工程使用不同文件。')
     before={str(p):file_hash(p) for p in (target,source)}
@@ -293,7 +293,7 @@ def retain_parameters(target, source, *, track_index=0, source_track_index=0,
 def register_expression(job, project, voice='lead', track_index=0):
     """Remember the actual parameter-bearing result for subsequent reprocessing."""
     from common import saved_path
-    from calibration_session import project_data
+    from project_io import project_data
     from expression_calibration import CONTROLS,score_identity
     job,project=Path(job).resolve(),Path(project).resolve()
     if not (job/'request.json').is_file() or not (job/'audio/source.wav').is_file():return False
@@ -322,13 +322,13 @@ def inherit_expression(previous,job,request):
     if data.get('schema')!=1 or data.get('source_audio_sha256')!=file_hash(previous/'audio/source.wav'):
         raise ValueError('原演唱参数与音乐来源不一致，已停止重新处理。')
     entries={}
-    from project_exports import voices_for
+    from project_io import voices_for
     for voice,row in data['tracks'].items():
         if voice not in voices_for(request):continue
         source=app_path(row['project'])
         digest=file_hash(source)
         if digest!=row['sha256']:
-            from calibration_session import project_data
+            from project_io import project_data
             from expression_calibration import score_identity
             value=project_data(source);_,track=selected_track(value,row['track_index'])
             if (score_identity(track,value)!=row.get('score_sha256')
@@ -347,14 +347,8 @@ def inherit_expression(previous,job,request):
 
 
 def retained_signature(job,request):
-    spec=request['retained_expression'];job=Path(job).resolve()
-    if file_hash(job/'audio/source.wav')!=spec['source_audio_sha256']:
-        raise ValueError('当前音乐与原参数的来源不同，无法保留参数。')
-    for row in spec['tracks'].values():
-        path=(job/row['file']).resolve()
-        if not path.is_relative_to(job) or file_hash(path)!=row['sha256']:
-            raise ValueError('待保留的参数工程缺失或已改变，已停止导出。')
-    return {'spec':spec,'adapter':file_hash(Path(__file__))}
+    from project_io import retained_signature as _retained_signature
+    return _retained_signature(job, request, adapter_file=__file__)
 
 
 def selected_track(data,index):
@@ -392,7 +386,7 @@ def lyric_review(data,index,reference):
 
 
 def inspect_inputs(project,reference,*,track_index=0,job=None,voice='lead',reference_lyrics=None):
-    from calibration_session import project_data
+    from project_io import project_data
     from vocal_expression import TempoMap
     from pitch_accuracy import audit_svp_pitch
     import soundfile as sf
@@ -473,7 +467,7 @@ def _infer_pitch(reference,cancel,progress,*,window=None):
 def prepare_copy(project,reference,destination,*,track_index=0,template=None,repair_pitch=False,
                  language=None,cancel=lambda:None,progress=lambda text:None):
     """Prepare a separate score without copying another song's curves or notes."""
-    from calibration_session import project_data
+    from project_io import project_data
     project,reference,destination=Path(project).resolve(),Path(reference).resolve(),Path(destination).resolve()
     if destination.exists():raise FileExistsError('准备目录已存在，请换用新的目录。')
     originals={str(project):file_hash(project),str(reference):file_hash(reference)}
@@ -502,7 +496,7 @@ def prepare_copy(project,reference,destination,*,track_index=0,template=None,rep
             from pitch_accuracy import absolute_curve,clear_explicit_pitch_scaffolding
             from calibration_refinement import dense_points
             from vocal_expression import TempoMap,automation
-            from project_exports import library
+            from project_io import library
             import os
             result=_infer_pitch(reference,cancel,progress);cancel()
             single=copy.deepcopy(data);single['tracks']=[copy.deepcopy(track)]
@@ -546,9 +540,27 @@ def prepare_copy(project,reference,destination,*,track_index=0,template=None,rep
         pending.unlink(missing_ok=True);source.unlink(missing_ok=True)
 
 
+def read_session(path):
+    from common import native_path
+    from expression_calibration import CONTROLS
+    path=Path(path).resolve();spec=json.loads(Path(native_path(path)).read_text(encoding='utf-8-sig'))
+    if (not isinstance(spec,dict) or spec.get('schema')!=1 or spec.get('voice') not in ('lead','backing','vocals')
+            or not isinstance(spec.get('outputs'),dict) or set(spec['outputs'])!={'neutral',*CONTROLS}
+            or any(not isinstance(v,str) or not v.startswith(('VWA_', 'BVWA_')) or any(c in v for c in '/\\:') for v in spec['outputs'].values())
+            or len(set(spec['outputs'].values()))!=7 or type(spec.get('track_index')) is not int
+            or type(spec.get('minimum_duration')) not in (float,int) or not math.isfinite(spec['minimum_duration'])
+            or spec['minimum_duration']<=0 or type(spec.get('strength')) not in (float,int)
+            or not math.isfinite(spec['strength']) or not 0<spec['strength']<=1):
+        raise ValueError('自动校准会话无效。')
+    for key in ('project','reference','project_sha256','reference_sha256','score_sha256','render_folder'):
+        if not isinstance(spec.get(key),str) or not spec[key]:raise ValueError('自动校准会话缺少输入记录。')
+    if spec.get('render_channel_mode','standard') not in ('standard','sv-extra','sv-isolated'):
+        raise ValueError('校准会话中的气声输出方式无效。')
+    return spec
+
+
 def neutral_project(session,original):
     """Create a neutral comparison with matching notes, pitch, voice and media."""
-    from calibration_session import read_session
     from expression_calibration import CONTROLS,_clear_control_offsets
     root=Path(session).resolve().parent;spec=read_session(session)
     receipt=root/'neutral-receipt.json'

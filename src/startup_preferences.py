@@ -74,3 +74,34 @@ def defer_reminder(root,version,seconds,*,now=None):
 
 def reset_reminder(root):
     return _save(root,{'update_reminder':{}})
+
+
+def whats_new_due(version, preferences):
+    """Return True for existing users who finished the tour but haven't seen *version*'s highlights."""
+    if tour_due(preferences):
+        return False
+    seen = preferences.get('whats_new_seen_version')
+    return not isinstance(seen, str) or seen != str(version)
+
+
+def dismiss_whats_new(root, version):
+    return _save(root, {'whats_new_seen_version': str(version)})
+
+
+def page_tip_seen(preferences, page_id):
+    seen = preferences.get('seen_page_tips')
+    return isinstance(seen, list) and str(page_id) in seen
+
+
+def mark_page_tip_seen(root, page_id):
+    prefs = load_preferences(root)
+    seen = prefs.get('seen_page_tips')
+    items = [str(x) for x in seen if isinstance(x, str)] if isinstance(seen, list) else []
+    key = str(page_id)
+    if key not in items:
+        items.append(key)
+    return _save(root, {'seen_page_tips': items})
+
+
+def reset_page_tips(root):
+    return _save(root, {'seen_page_tips': []})

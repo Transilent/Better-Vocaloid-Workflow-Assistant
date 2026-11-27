@@ -533,7 +533,7 @@ def _uf_pitch_samples(curve, grid, keys):
 def apply_manual_pitch(original, dest, format, spans, *, cancel):
     """Reuse the native and exchange writers after replacing the style contribution."""
     import numpy as np
-    from tuning_pitch_layer import CAPACITY, LIMIT, PROTECTED, mix_pitch_samples, pitch_tick_grid
+    from tuning_pitch_math import CAPACITY, LIMIT, PROTECTED, mix_pitch_samples, pitch_tick_grid
 
     native = format == 'acep'
     read_curve, samples = (_ace_curve, _ace_pitch_samples) if native else (_uf_curve, _uf_pitch_samples)
@@ -616,14 +616,14 @@ class _PitchAdapter:
         return _Layout(data, self.native)
 
     def selected_indices(self, data, options, *, layout=None):
-        from tuning_engine import selected_indices
+        from tuning_plan_core import selected_indices
         layout = self.Layout(data) if layout is None else layout
         if options['expression_mode'] != 'preserve':
             raise ValueError(self.STYLE_ONLY)
         return selected_indices(layout.score, options, layout=layout)
 
     def process_project(self, data, options, *, cancel=lambda:None, progress=lambda _text:None):
-        from tuning_engine import StyleTargets, VERSION, _has_incomplete, apply_style_plan, digest, settings
+        from tuning_plan_core import StyleTargets, VERSION, _has_incomplete, apply_style_plan, digest, settings
         from vocal_expression import TempoMap
         options = settings(options)
         layout = self.Layout(data)

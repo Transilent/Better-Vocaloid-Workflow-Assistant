@@ -3,7 +3,7 @@ import QtQuick.Controls
 import QtQuick.Dialogs
 import QtQuick.Layouts
 
-Dialog {
+UiDialog {
     id: page
     function vwaTr(message) {
         return typeof quickTranslation !== "undefined" ? quickTranslation.text(message) : message
@@ -11,11 +11,7 @@ Dialog {
     objectName: "subtitleDialog"
     required property QtObject controller
     signal neteaseRequested()
-    required property QtObject theme
 
-    parent: Overlay.overlay
-    modal: true
-    focus: true
     closePolicy: Popup.CloseOnEscape
     padding: 0
     width: parent ? Math.min(parent.width - Math.round(32 * theme.scale), Math.round(1080 * theme.scale))

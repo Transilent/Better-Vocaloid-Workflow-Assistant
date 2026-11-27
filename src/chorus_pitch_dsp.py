@@ -14,6 +14,7 @@ _FLOAT_PTR = POINTER(c_float)
 _DOUBLE_PTR = POINTER(c_double)
 _PLANAR = POINTER(_FLOAT_PTR)
 _SIGNALSMITH_TONALITY_HZ = 8000.0
+_SIGNALSMITH_VOCAL_WINDOW_MS = 64.0
 _OPTIONS = (
     0x00000001  # ProcessRealTime
     | 0x00010000  # ThreadingNever
@@ -78,6 +79,25 @@ def _signalsmith_api(path_text):
     stretch_fn.restype = c_int
     stretch_fn.argtypes = (c_int, c_int, c_int, _FLOAT_PTR, _DOUBLE_PTR, c_int, c_float, _FLOAT_PTR)
     return stretch_fn
+
+
+@lru_cache(maxsize=4)
+def _signalsmith_vocal_api(path_text):
+    api = CDLL(path_text)
+    abi_fn = api.vwa_chorus_pitch_abi
+    abi_fn.restype = c_int
+    abi_fn.argtypes = ()
+    if abi_fn() != 1:
+        return None
+    fn = getattr(api, 'vwa_chorus_pitch_stretch_vocal', None)
+    if fn is None:
+        return None
+    fn.restype = c_int
+    fn.argtypes = (
+        c_int, c_int, c_int, _FLOAT_PTR, _DOUBLE_PTR, _DOUBLE_PTR,
+        c_int, c_float, c_float, _FLOAT_PTR,
+    )
+    return fn
 
 
 @lru_cache(maxsize=4)
@@ -180,6 +200,26 @@ def _signalsmith_pitch_time_warp_api(path_text):
     return fn
 
 
+@lru_cache(maxsize=4)
+def _signalsmith_pitch_time_warp_vocal_api(path_text):
+    api = CDLL(path_text)
+    abi_fn = api.vwa_chorus_pitch_abi
+    abi_fn.restype = c_int
+    abi_fn.argtypes = ()
+    if abi_fn() != 1:
+        return None
+    fn = getattr(api, 'vwa_chorus_pitch_time_warp_vocal', None)
+    if fn is None:
+        return None
+    fn.restype = c_int
+    fn.argtypes = (
+        c_int, c_int, c_int, c_int, c_int,
+        _FLOAT_PTR, _DOUBLE_PTR, _DOUBLE_PTR, _DOUBLE_PTR,
+        c_int, c_float, c_float, _FLOAT_PTR,
+    )
+    return fn
+
+
 def signalsmith_pitch_time_warp_available(root=None, environment=None):
     dll = signalsmith_dll_path(root=root, environment=environment)
     return dll is not None and _signalsmith_pitch_time_warp_api(str(dll)) is not None
@@ -187,13 +227,14 @@ def signalsmith_pitch_time_warp_available(root=None, environment=None):
 
 def _signalsmith_pitch_time_warp_stream(
     clip, rate, pad_frames, source_map, shift, check,
-    *, tonality_hz=_SIGNALSMITH_TONALITY_HZ, formants=True,
+    *, tonality_hz=_SIGNALSMITH_TONALITY_HZ, formants=True, f0_hz=None, window_ms=_SIGNALSMITH_VOCAL_WINDOW_MS,
 ):
     dll = signalsmith_dll_path()
     if dll is None:
         return None
-    fn = _signalsmith_pitch_time_warp_api(str(dll))
-    if fn is None:
+    vocal_fn = _signalsmith_pitch_time_warp_vocal_api(str(dll))
+    fn = None if vocal_fn is not None else _signalsmith_pitch_time_warp_api(str(dll))
+    if vocal_fn is None and fn is None:
         return None
     check()
     channels, in_frames = clip.shape
@@ -201,16 +242,30 @@ def _signalsmith_pitch_time_warp_stream(
     source = np.ascontiguousarray(clip, dtype=np.float32)
     smap = np.ascontiguousarray(source_map, dtype=np.float64)
     ctrl = np.ascontiguousarray(shift, dtype=np.float64) if shift is not None else None
+    f0_arr = np.ascontiguousarray(f0_hz, dtype=np.float64) if f0_hz is not None else None
     output = np.empty((channels, out_frames), dtype=np.float32)
-    latency = fn(
-        int(rate), int(channels), int(in_frames), int(out_frames), int(pad_frames),
-        source.ctypes.data_as(_FLOAT_PTR),
-        smap.ctypes.data_as(_DOUBLE_PTR),
-        ctrl.ctypes.data_as(_DOUBLE_PTR) if ctrl is not None else None,
-        1 if formants else 0,
-        c_float(float(tonality_hz)),
-        output.ctypes.data_as(_FLOAT_PTR),
-    )
+    if vocal_fn is not None:
+        latency = vocal_fn(
+            int(rate), int(channels), int(in_frames), int(out_frames), int(pad_frames),
+            source.ctypes.data_as(_FLOAT_PTR),
+            smap.ctypes.data_as(_DOUBLE_PTR),
+            ctrl.ctypes.data_as(_DOUBLE_PTR) if ctrl is not None else None,
+            f0_arr.ctypes.data_as(_DOUBLE_PTR) if f0_arr is not None else None,
+            1 if formants else 0,
+            c_float(float(tonality_hz)),
+            c_float(float(window_ms)),
+            output.ctypes.data_as(_FLOAT_PTR),
+        )
+    else:
+        latency = fn(
+            int(rate), int(channels), int(in_frames), int(out_frames), int(pad_frames),
+            source.ctypes.data_as(_FLOAT_PTR),
+            smap.ctypes.data_as(_DOUBLE_PTR),
+            ctrl.ctypes.data_as(_DOUBLE_PTR) if ctrl is not None else None,
+            1 if formants else 0,
+            c_float(float(tonality_hz)),
+            output.ctypes.data_as(_FLOAT_PTR),
+        )
     check()
     if latency < 0:
         raise RuntimeError(f'Signalsmith 联合修音拉伸返回错误码：{latency}')
@@ -219,7 +274,7 @@ def _signalsmith_pitch_time_warp_stream(
 
 def render_continuous_pitch_time_warp(
     clip, rate, pad_frames, source_map, shift, check,
-    *, tonality_hz=_SIGNALSMITH_TONALITY_HZ, formants=True,
+    *, tonality_hz=_SIGNALSMITH_TONALITY_HZ, formants=True, f0_hz=None, window_ms=_SIGNALSMITH_VOCAL_WINDOW_MS,
 ):
     """Render time warp and continuous pitch shift in one single phase-coherent STFT pass."""
     channels, _ = clip.shape
@@ -247,9 +302,11 @@ def render_continuous_pitch_time_warp(
         ) * scale
         work_map = np.maximum.accumulate(np.clip(work_map, 0., max(0., len(down) - work_pad - 1.)))
         work_shift = np.interp(np.linspace(0., out_frames - 1, work_out), np.arange(out_frames), shift)
+        work_f0 = (np.interp(np.linspace(0., out_frames - 1, work_out), np.arange(out_frames), f0_hz)
+                   if f0_hz is not None else None)
         warped = render_continuous_pitch_time_warp(
             down.T, work_rate, work_pad, work_map, work_shift, check,
-            tonality_hz=tonality_hz, formants=formants,
+            tonality_hz=tonality_hz, formants=formants, f0_hz=work_f0, window_ms=window_ms,
         )
         restored = soxr.resample(warped.T, work_rate, rate).T
         if restored.shape[1] < out_frames:
@@ -258,7 +315,7 @@ def render_continuous_pitch_time_warp(
         return np.ascontiguousarray(restored[:, :out_frames], dtype=np.float32)
     rendered = _signalsmith_pitch_time_warp_stream(
         clip, rate, pad_frames, source_map, shift, check,
-        tonality_hz=tonality_hz, formants=formants,
+        tonality_hz=tonality_hz, formants=formants, f0_hz=f0_hz, window_ms=window_ms,
     )
     if rendered is not None:
         return rendered
@@ -266,31 +323,51 @@ def render_continuous_pitch_time_warp(
     return render_continuous_pitch(warped, rate, shift, check, engine='auto')
 
 
-def _signalsmith_stream(clip, rate, shift, check, *, tonality_hz=_SIGNALSMITH_TONALITY_HZ, formants=True):
+def _signalsmith_stream(
+    clip, rate, shift, check,
+    *, tonality_hz=_SIGNALSMITH_TONALITY_HZ, formants=True, f0_hz=None, window_ms=_SIGNALSMITH_VOCAL_WINDOW_MS,
+):
     dll = signalsmith_dll_path()
     if dll is None:
         raise RuntimeError('未找到 Signalsmith 原生修音组件。')
-    stretch_fn = _signalsmith_api(str(dll))
+    vocal_fn = _signalsmith_vocal_api(str(dll))
+    stretch_fn = None if vocal_fn is not None else _signalsmith_api(str(dll))
     check()
     channels, frames = clip.shape
     source = np.ascontiguousarray(clip, dtype=np.float32)
     control = np.ascontiguousarray(shift, dtype=np.float64)
+    f0_arr = np.ascontiguousarray(f0_hz, dtype=np.float64) if f0_hz is not None else None
     output = np.empty_like(source)
-    latency = stretch_fn(
-        int(rate), int(channels), int(frames),
-        source.ctypes.data_as(_FLOAT_PTR),
-        control.ctypes.data_as(_DOUBLE_PTR),
-        1 if formants else 0,
-        c_float(float(tonality_hz)),
-        output.ctypes.data_as(_FLOAT_PTR),
-    )
+    if vocal_fn is not None:
+        latency = vocal_fn(
+            int(rate), int(channels), int(frames),
+            source.ctypes.data_as(_FLOAT_PTR),
+            control.ctypes.data_as(_DOUBLE_PTR),
+            f0_arr.ctypes.data_as(_DOUBLE_PTR) if f0_arr is not None else None,
+            1 if formants else 0,
+            c_float(float(tonality_hz)),
+            c_float(float(window_ms)),
+            output.ctypes.data_as(_FLOAT_PTR),
+        )
+    else:
+        latency = stretch_fn(
+            int(rate), int(channels), int(frames),
+            source.ctypes.data_as(_FLOAT_PTR),
+            control.ctypes.data_as(_DOUBLE_PTR),
+            1 if formants else 0,
+            c_float(float(tonality_hz)),
+            output.ctypes.data_as(_FLOAT_PTR),
+        )
     check()
     if latency < 0:
         raise RuntimeError(f'Signalsmith 修音返回错误码：{latency}')
     return output
 
 
-def render_signalsmith_pitch(clip, rate, shift, check, *, tonality_hz=_SIGNALSMITH_TONALITY_HZ, formants=True):
+def render_signalsmith_pitch(
+    clip, rate, shift, check,
+    *, tonality_hz=_SIGNALSMITH_TONALITY_HZ, formants=True, f0_hz=None, window_ms=_SIGNALSMITH_VOCAL_WINDOW_MS,
+):
     """Render continuous multichannel pitch shift via Signalsmith Stretch (MIT)."""
     if clip.shape[1] != len(shift):
         raise ValueError('修音曲线与音频长度不一致。')
@@ -299,17 +376,95 @@ def render_signalsmith_pitch(clip, rate, shift, check, *, tonality_hz=_SIGNALSMI
     if not np.isfinite(shift).all() or np.max(np.abs(shift)) > 72.:
         raise ValueError('修音曲线包含无效音高。')
     if rate <= 96000:
-        return _signalsmith_stream(clip, rate, shift, check, tonality_hz=tonality_hz, formants=formants)
+        return _signalsmith_stream(
+            clip, rate, shift, check,
+            tonality_hz=tonality_hz, formants=formants, f0_hz=f0_hz, window_ms=window_ms,
+        )
     work_rate = rate
     while work_rate > 96000:
         work_rate = round(work_rate / 2)
     down = soxr.resample(clip.T, rate, work_rate)
     control = np.interp(np.arange(len(down)) * (rate / work_rate), np.arange(len(shift)), shift)
-    changed = _signalsmith_stream(down.T, work_rate, control, check, tonality_hz=tonality_hz, formants=formants)
+    work_f0 = (np.interp(np.arange(len(down)) * (rate / work_rate), np.arange(len(f0_hz)), f0_hz)
+               if f0_hz is not None else None)
+    changed = _signalsmith_stream(
+        down.T, work_rate, control, check,
+        tonality_hz=tonality_hz, formants=formants, f0_hz=work_f0, window_ms=window_ms,
+    )
     restored = soxr.resample(changed.T, work_rate, rate).T
     if restored.shape[1] < len(shift):
         return np.concatenate((restored, clip[:, restored.shape[1]:]), axis=1)
     return restored[:, :len(shift)]
+
+
+def bypass_unvoiced_sibilants(dry, wet, rate, shift=None):
+    """Preserve dry unvoiced consonants, sibilants (s/sh/f/t/k) and breaths without phase smearing.
+
+    Computed deterministically from local `dry` audio alone so bit-exact split/manual
+    invariants stay intact while vocal clarity and attack crispness remain dry.
+    """
+    frames = len(dry)
+    win = max(64, round(.020 * rate))
+    hop = max(16, round(.005 * rate))
+    if frames < win * 2 or rate < 16000:
+        return wet
+    ch = int(np.argmax(np.mean(dry.astype(np.float64) ** 2, axis=0)))
+    mono = dry[:, ch].astype(np.float64)
+    starts = np.arange(0, frames - win + 1, hop)
+    if len(starts) < 3:
+        return wet
+    centers = starts + win // 2
+    idx = starts[:, None] + np.arange(win)[None, :]
+    seg = mono[idx]
+    seg = seg - seg.mean(axis=1, keepdims=True)
+    rms = np.sqrt(np.mean(seg * seg, axis=1))
+    p90 = float(np.percentile(rms, 90))
+    if p90 < 1e-4:
+        return wet
+
+    # Spectral sibilance ratio: energy above 3.4 kHz vs vocal harmonic core 80..3200 Hz.
+    window = np.hanning(win)[None, :]
+    spec = np.abs(np.fft.rfft(seg * window, axis=1)) ** 2
+    freqs = np.fft.rfftfreq(win, 1.0 / rate)
+    core = spec[:, (freqs >= 80.) & (freqs <= 3200.)].sum(axis=1)
+    sib = spec[:, (freqs >= 3400.) & (freqs <= min(11000., rate * .48))].sum(axis=1)
+    hf_ratio = sib / np.maximum(core, 1e-12)
+
+    # Zero-crossing rate (Hz).
+    zcr = np.mean((seg[:, :-1] * seg[:, 1:]) < 0., axis=1) * rate
+
+    # Normalized autocorrelation peak over human F0 range (75..1100 Hz) via FFT.
+    n_fft = 1 << int(np.ceil(np.log2(win * 2)))
+    f_seg = np.fft.rfft(seg, n=n_fft, axis=1)
+    ac = np.fft.irfft(f_seg * np.conj(f_seg), n=n_fft, axis=1)[:, :win]
+    min_lag = max(2, int(rate // 1100))
+    max_lag = min(win - 2, max(min_lag + 1, int(rate // 75)))
+    energy = np.maximum(ac[:, 0], 1e-12)
+    peak_ac = np.max(ac[:, min_lag:max_lag + 1], axis=1) / energy
+
+    # Identify genuinely unvoiced sibilants/plosives/breaths, never voiced vowels.
+    audible = rms > max(1.5e-4, .012 * p90)
+    unvoiced_sib = audible & (peak_ac < .38) & ((hf_ratio > .32) | (zcr > 2600.))
+    unvoiced_breath = audible & (peak_ac < .28) & (rms < .14 * p90) & (hf_ratio > .12)
+    raw_mask = (unvoiced_sib | unvoiced_breath).astype(np.float64)
+    if shift is not None and len(shift) == frames:
+        # Leave zero-shift regions untouched (already blended/dry).
+        raw_mask *= (np.abs(shift[centers]) >= .05)
+    if not np.any(raw_mask):
+        return wet
+
+    # Smooth mask (~12 ms) and protect strongly periodic vowel cores.
+    kernel = np.array([.20, .60, .20], dtype=np.float64)
+    smooth = np.convolve(np.pad(raw_mask, 1, mode='edge'), kernel, mode='valid')
+    smooth = np.where(peak_ac >= .55, 0., smooth)
+    if float(np.max(smooth)) < .05:
+        return wet
+
+    sample_mask = np.interp(np.arange(frames, dtype=np.float64), centers, smooth, left=smooth[0], right=smooth[-1])
+    sample_mask = np.clip(sample_mask, 0., 1.).astype(np.float32)
+    # Cosine-ease for click-free dry/wet consonant transitions.
+    sample_mask = sample_mask * sample_mask * (3. - 2. * sample_mask)
+    return (wet * (1. - sample_mask[:, None]) + dry * sample_mask[:, None]).astype(np.float32)
 
 
 def resolve_pitch_engine(engine='auto'):

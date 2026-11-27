@@ -586,11 +586,40 @@ Item {
                                 Accessible.name: page.tr("原视频首帧完整预览")
                             }
 
+                            UiDropStage {
+                                objectName: "videoDropStage"
+                                anchors.fill: parent
+                                visible: !page.sourceAvailable && page.previewUrl.length === 0
+                                theme: page.theme
+                                iconGlyph: "nav_video"
+                                title: page.tr("拖入原视频或 Mixdown 音频")
+                                subtitle: page.tr("选择原视频后即可提取高清首帧、自动对齐新音轨并无损封装合成 MP4。")
+                                dropHint: page.tr("松开鼠标以载入视频或音频")
+                                formatTags: ["MP4 / MOV / MKV", "WAV / FLAC / MP3"]
+                                primaryText: page.tr("选择原视频…")
+                                primaryIcon: "nav_video"
+                                primaryEnabled: !page.busy
+                                secondaryText: page.tr("选择 Mixdown…")
+                                secondaryIcon: "nav_mixdown"
+                                secondaryEnabled: !page.busy
+                                onPrimaryClicked: videoDialog.open()
+                                onSecondaryClicked: mixdownDialog.open()
+                                onFilesDropped: urls => {
+                                    for (let i = 0; i < urls.length; ++i) {
+                                        const lower = String(urls[i] || "").toLowerCase()
+                                        if (/\.(mp4|mov|mkv|webm|avi)$/.test(lower))
+                                            page.controller.chooseFile("sourceVideo", urls[i])
+                                        else if (/\.(wav|flac|mp3|m4a|aac|ogg)$/.test(lower))
+                                            page.controller.chooseFile("mixdown", urls[i])
+                                    }
+                                }
+                            }
+
                             Column {
                                 anchors.centerIn: parent
                                 width: Math.max(0, parent.width - Math.round(64 * page.theme.scale))
                                 spacing: Math.round(6 * page.theme.scale)
-                                visible: page.previewUrl.length === 0
+                                visible: (page.sourceAvailable && page.previewUrl.length === 0)
                                     || previewImage.status === Image.Loading
                                     || previewImage.status === Image.Error
 
@@ -1478,12 +1507,10 @@ Item {
         }
     }
 
-    Dialog {
+    UiDialog {
         id: sourceOnlyDialog
         objectName: "videoRestoreSourceConfirm"
-        parent: Overlay.overlay
-        anchors.centerIn: parent
-        modal: true
+        theme: page.theme
         title: page.tr("只载入任务原视频？")
         width: Math.min(parent.width - 36, Math.round(500 * page.theme.scale))
         standardButtons: Dialog.Cancel | Dialog.Ok

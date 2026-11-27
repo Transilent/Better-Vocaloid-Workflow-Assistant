@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$GccPath = 'D:\mingw64\bin\gcc.exe',
+    [string]$GccPath = '',
     [string]$MiniaudioHeaderPath = '',
     [string]$OutputDirectory = '',
     [switch]$RunTests,
@@ -29,8 +29,16 @@ if (-not $OutputDirectory) {
 }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 
-if (-not (Test-Path -LiteralPath $GccPath)) {
-    throw "GCC not found at explicit local path: $GccPath"
+if (-not $GccPath) {
+    $cmd = Get-Command gcc -ErrorAction SilentlyContinue
+    if ($cmd) {
+        $GccPath = $cmd.Source
+    } elseif (Test-Path -LiteralPath 'D:\mingw64\bin\gcc.exe') {
+        $GccPath = 'D:\mingw64\bin\gcc.exe'
+    }
+}
+if (-not $GccPath -or -not (Test-Path -LiteralPath $GccPath)) {
+    throw "GCC not found on PATH or at explicit path '$GccPath'. Install MinGW-w64 or pass -GccPath."
 }
 $gcc = Get-Item -LiteralPath $GccPath
 $gccVersion = @(& $gcc.FullName --version)[0]

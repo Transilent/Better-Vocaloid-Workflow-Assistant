@@ -26,8 +26,7 @@ from agent_monophony import monophonic_conflicts
 from common import native_path
 
 
-def _io_path(path):
-    return Path(native_path(path))
+from agent_primitives import canonical_json_bytes as _canonical_json_bytes, io_path as _io_path
 
 
 _SCHEMA_VERSION = 1
@@ -139,20 +138,7 @@ def _canonical_digest(value: Any) -> str:
     return _sha256(payload)
 
 
-def _canonical_json_bytes(value: Any, *, pretty: bool = False) -> bytes:
-    options = {
-        "ensure_ascii": False,
-        "allow_nan": False,
-        "sort_keys": True,
-    }
-    if pretty:
-        options["indent"] = 2
-    else:
-        options["separators"] = (",", ":")
-    text = json.dumps(value, **options)
-    if pretty:
-        text += "\n"
-    return text.encode("utf-8")
+# _canonical_json_bytes imported from agent_primitives above.
 
 
 def _round_seconds(value: float | None) -> float | None:

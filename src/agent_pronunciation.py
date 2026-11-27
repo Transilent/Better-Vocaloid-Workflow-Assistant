@@ -109,28 +109,18 @@ class PronunciationError(ValueError):
     """Invalid pronunciation evidence, input or patch."""
 
 
-def _io_path(path: Any) -> Path:
-    return Path(native_path(path))
+from agent_primitives import (
+    canonical_json_bytes as _canonical_bytes,
+    finite_number as _shared_finite_number,
+    io_path as _io_path,
+)
 
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _canonical_bytes(value: Any, *, pretty: bool = False) -> bytes:
-    options: dict[str, Any] = {
-        "ensure_ascii": False,
-        "allow_nan": False,
-        "sort_keys": True,
-    }
-    if pretty:
-        options["indent"] = 2
-    else:
-        options["separators"] = (",", ":")
-    text = json.dumps(value, **options)
-    if pretty:
-        text += "\n"
-    return text.encode("utf-8")
+# _canonical_bytes imported from agent_primitives above.
 
 
 def _canonical_digest(value: Any) -> str:
@@ -159,12 +149,7 @@ def _strict_int(
 
 
 def _finite_number(value: Any, field_name: str) -> int | float:
-    if type(value) not in (int, float):
-        raise PronunciationError(f"{field_name} 必须是有限数值。")
-    number = float(value)
-    if not math.isfinite(number):
-        raise PronunciationError(f"{field_name} 必须是有限数值。")
-    return int(number) if number.is_integer() else number
+    return _shared_finite_number(value, field_name, coerce_integral=True, error_type=PronunciationError)
 
 
 def _safe_text(

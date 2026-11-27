@@ -306,14 +306,25 @@ Item {
         property string title
         property string subtitle
         property string icon: ""
+        property string stepNumber: ""
         default property alias contentData: contentColumn.data
 
-        implicitHeight: cardColumn.implicitHeight + Math.round(24 * card.theme.scale)
+        implicitHeight: cardColumn.implicitHeight + Math.round(28 * card.theme.scale)
         color: card.theme.surface
-        radius: Math.round(10 * card.theme.scale)
+        radius: card.theme.radiusLg !== undefined ? card.theme.radiusLg : Math.round(12 * card.theme.scale)
         border.width: 1
-        border.color: card.theme.line
+        border.color: card.theme.lineSubtle !== undefined ? card.theme.lineSubtle : card.theme.line
         clip: false
+
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.leftMargin: parent.radius
+            anchors.rightMargin: parent.radius
+            height: 1
+            color: card.theme.highlightTop !== undefined ? card.theme.highlightTop : "transparent"
+        }
 
         ColumnLayout {
             id: cardColumn
@@ -325,10 +336,30 @@ Item {
 
             RowLayout {
                 Layout.fillWidth: true
-                spacing: Math.round(7 * card.theme.scale)
+                spacing: Math.round(8 * card.theme.scale)
+
+                Rectangle {
+                    visible: card.stepNumber.length > 0
+                    Layout.preferredWidth: Math.round(22 * card.theme.scale)
+                    Layout.preferredHeight: Layout.preferredWidth
+                    Layout.alignment: Qt.AlignVCenter
+                    radius: Math.round(Layout.preferredWidth / 2)
+                    color: Qt.rgba(card.theme.accent.r, card.theme.accent.g, card.theme.accent.b, 0.16)
+                    border.width: 1
+                    border.color: Qt.rgba(card.theme.accent.r, card.theme.accent.g, card.theme.accent.b, 0.36)
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: card.stepNumber
+                        color: card.theme.accent
+                        font.pixelSize: Math.round(11 * card.theme.scale)
+                        font.weight: Font.Bold
+                        textFormat: Text.PlainText
+                    }
+                }
 
                 Loader {
-                    active: card.icon.length > 0
+                    active: card.icon.length > 0 && card.stepNumber.length === 0
                     visible: active
                     Layout.preferredWidth: Math.round(16 * card.theme.scale)
                     Layout.preferredHeight: Layout.preferredWidth
@@ -340,7 +371,7 @@ Item {
                     Layout.fillWidth: true
                     text: card.title
                     color: card.theme.text
-                    font.pixelSize: Math.round(17 * card.theme.scale)
+                    font.pixelSize: Math.round(16 * card.theme.scale)
                     font.weight: Font.DemiBold
                     textFormat: Text.PlainText
                     wrapMode: Text.Wrap
@@ -373,9 +404,10 @@ Item {
         onComponentsRequested: page.controller.navigate("components")
     }
 
-    Dialog {
+    UiDialog {
         id: savePreparationPresetDialog
         objectName: "preparationPresetNameDialog"
+        theme: page.theme
         title: page.controller.text("保存到本机预设库")
         parent: Overlay.overlay
         modal: true
@@ -435,9 +467,10 @@ Item {
         }
     }
 
-    Dialog {
+    UiDialog {
         id: removePreparationPresetDialog
         objectName: "preparationPresetRemoveDialog"
+        theme: page.theme
         property string presetKey: ""
         property string presetLabel: ""
         title: page.controller.text("移除自定义预设")
@@ -539,7 +572,7 @@ Item {
         contentWidth: availableWidth
         clip: true
         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
-        ScrollBar.vertical.policy: ScrollBar.AsNeeded
+        ScrollBar.vertical: UiScrollBar { theme: page.theme }
 
         ColumnLayout {
             width: prepScroll.availableWidth
@@ -659,6 +692,7 @@ Item {
                         Layout.fillWidth: true
                         Layout.alignment: Qt.AlignTop
                         theme: page.theme
+                        stepNumber: "1"
                         icon: "music_note"
                         title: page.controller.text("音乐来源")
                         subtitle: page.controller.text("使用本地音频，或从 B站视频下载。")
@@ -697,8 +731,12 @@ Item {
                         Rectangle {
                             Layout.fillWidth: true
                             implicitHeight: sourceSummary.implicitHeight + Math.round(20 * page.theme.scale)
-                            color: page.theme.raised
-                            radius: Math.round(8 * page.theme.scale)
+                            color: localMusicDropArea.containsDrag ? page.theme.selected : page.theme.raised
+                            radius: page.theme.radiusMd !== undefined ? page.theme.radiusMd : Math.round(8 * page.theme.scale)
+                            border.width: 1
+                            border.color: localMusicDropArea.containsDrag
+                                ? page.theme.accent
+                                : (page.theme.lineSubtle !== undefined ? page.theme.lineSubtle : page.theme.line)
 
                             ColumnLayout {
                                 id: sourceSummary
@@ -734,6 +772,7 @@ Item {
                             }
 
                             DropArea {
+                                id: localMusicDropArea
                                 objectName: "localMusicDropArea"
                                 anchors.fill: parent
                                 enabled: !page.editLocked
@@ -880,6 +919,7 @@ Item {
                     SectionCard {
                         Layout.fillWidth: true
                         theme: page.theme
+                        stepNumber: "2"
                         icon: "lyrics"
                         title: page.controller.text("歌词与语言")
                         subtitle: page.controller.text("已有歌词可直接填入或导入；留空时按所选语言从人声音频识别。")
@@ -1114,6 +1154,7 @@ Item {
                         Layout.fillWidth: true
                         Layout.alignment: Qt.AlignTop
                         theme: page.theme
+                        stepNumber: "3"
                         icon: "nav_processing"
                         title: page.controller.text("分离与分轨")
                         subtitle: page.controller.text("选择内置分离、BS-RoFormer，或直接导入已有分轨。")
@@ -1342,6 +1383,7 @@ Item {
                     SectionCard {
                         Layout.fillWidth: true
                         theme: page.theme
+                        stepNumber: "4"
                         icon: "target"
                         title: page.controller.text("工作目标")
 

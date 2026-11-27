@@ -28,6 +28,11 @@ if __name__ == '__main__':
             faulthandler.enable(log)
         except OSError:
             pass
+        try:
+            from crash_dump import enable_crash_capture
+            enable_crash_capture(ROOT)
+        except OSError:
+            pass
     try:
         result = main()
     except Exception as error:

@@ -6,6 +6,22 @@
       "source": "src/quick_chorus.py"
     },
     {
+      "file": "quick_convert.py",
+      "source": "src/quick_convert.py"
+    },
+    {
+      "file": "project_convert_service.py",
+      "source": "src/project_convert_service.py"
+    },
+    {
+      "file": "project_convert_worker.py",
+      "source": "src/project_convert_worker.py"
+    },
+    {
+      "file": "chorus_review_service.py",
+      "source": "src/chorus_review_service.py"
+    },
+    {
       "file": "chorus_project.py",
       "source": "src/chorus_project.py"
     },
@@ -62,6 +78,10 @@
       "source": "src/quick_ui/ChorusPage.qml"
     },
     {
+      "file": "quick_ui/ProjectConvertPage.qml",
+      "source": "src/quick_ui/ProjectConvertPage.qml"
+    },
+    {
       "file": "quick_ui/ChorusTimeline.qml",
       "source": "src/quick_ui/ChorusTimeline.qml"
     },
@@ -114,6 +134,10 @@
       "source": "src/quick_mixdown.py"
     },
     {
+      "file": "mixdown_handoff_service.py",
+      "source": "src/mixdown_handoff_service.py"
+    },
+    {
       "file": "quick_mixdown_player.py",
       "source": "src/quick_mixdown_player.py"
     },
@@ -142,12 +166,24 @@
       "source": "src/quick_tuning.py"
     },
     {
+      "file": "tuning_session_store.py",
+      "source": "src/tuning_session_store.py"
+    },
+    {
       "file": "quick_media_handoff.py",
       "source": "src/quick_media_handoff.py"
     },
     {
       "file": "quick_publication.py",
       "source": "src/quick_publication.py"
+    },
+    {
+      "file": "publication_browser_service.py",
+      "source": "src/publication_browser_service.py"
+    },
+    {
+      "file": "publication_draft_service.py",
+      "source": "src/publication_draft_service.py"
     },
     {
       "file": "quick_subtitles.py",
@@ -188,6 +224,18 @@
     {
       "file": "tuning_pitch_layer.py",
       "source": "src/tuning_pitch_layer.py"
+    },
+    {
+      "file": "tuning_pitch_math.py",
+      "source": "src/tuning_pitch_math.py"
+    },
+    {
+      "file": "style_helpers.py",
+      "source": "src/style_helpers.py"
+    },
+    {
+      "file": "export_receipts.py",
+      "source": "src/export_receipts.py"
     },
     {
       "file": "tuning_clock.py",
@@ -286,8 +334,56 @@
       "source": "src/quick_app.py"
     },
     {
+      "file": "draft_recovery.py",
+      "source": "src/draft_recovery.py"
+    },
+    {
+      "file": "quick_recovery.py",
+      "source": "src/quick_recovery.py"
+    },
+    {
+      "file": "recent_items.py",
+      "source": "src/recent_items.py"
+    },
+    {
+      "file": "quick_ux_hub.py",
+      "source": "src/quick_ux_hub.py"
+    },
+    {
+      "file": "audio_device_recovery.py",
+      "source": "src/audio_device_recovery.py"
+    },
+    {
+      "file": "mirror_probe.py",
+      "source": "src/mirror_probe.py"
+    },
+    {
+      "file": "preparation_queue.py",
+      "source": "src/preparation_queue.py"
+    },
+    {
+      "file": "win_taskbar.py",
+      "source": "src/win_taskbar.py"
+    },
+    {
+      "file": "quick_ui/UiToastStack.qml",
+      "source": "src/quick_ui/UiToastStack.qml"
+    },
+    {
+      "file": "quick_ui/RecoveryBanner.qml",
+      "source": "src/quick_ui/RecoveryBanner.qml"
+    },
+    {
+      "file": "quick_ui/GlobalDropOverlay.qml",
+      "source": "src/quick_ui/GlobalDropOverlay.qml"
+    },
+    {
       "file": "quick_bridge.py",
       "source": "src/quick_bridge.py"
+    },
+    {
+      "file": "task_actions_service.py",
+      "source": "src/task_actions_service.py"
     },
     {
       "file": "quick_results.py",
@@ -358,6 +454,14 @@
       "source": "src/quick_ui/UiButton.qml"
     },
     {
+      "file": "quick_ui/UiCard.qml",
+      "source": "src/quick_ui/UiCard.qml"
+    },
+    {
+      "file": "quick_ui/UiCheckBox.qml",
+      "source": "src/quick_ui/UiCheckBox.qml"
+    },
+    {
       "file": "quick_ui/UiIcon.qml",
       "source": "src/quick_ui/UiIcon.qml"
     },
@@ -366,8 +470,36 @@
       "source": "src/quick_ui/UiComboBox.qml"
     },
     {
+      "file": "quick_ui/UiCommandPalette.qml",
+      "source": "src/quick_ui/UiCommandPalette.qml"
+    },
+    {
+      "file": "quick_ui/UiDialog.qml",
+      "source": "src/quick_ui/UiDialog.qml"
+    },
+    {
+      "file": "quick_ui/UiDropStage.qml",
+      "source": "src/quick_ui/UiDropStage.qml"
+    },
+    {
+      "file": "quick_ui/UiMenu.qml",
+      "source": "src/quick_ui/UiMenu.qml"
+    },
+    {
       "file": "quick_ui/UiNumberField.qml",
       "source": "src/quick_ui/UiNumberField.qml"
+    },
+    {
+      "file": "quick_ui/UiProgressBar.qml",
+      "source": "src/quick_ui/UiProgressBar.qml"
+    },
+    {
+      "file": "quick_ui/UiScrollBar.qml",
+      "source": "src/quick_ui/UiScrollBar.qml"
+    },
+    {
+      "file": "quick_ui/UiSlider.qml",
+      "source": "src/quick_ui/UiSlider.qml"
     },
     {
       "file": "context_structure.py",
@@ -522,6 +654,10 @@
       "source": "src/project_exports.py"
     },
     {
+      "file": "project_io.py",
+      "source": "src/project_io.py"
+    },
+    {
       "file": "vocal_expression.py",
       "source": "src/vocal_expression.py"
     },
@@ -640,6 +776,10 @@
     {
       "file": "bilibili_session.py",
       "source": "src/bilibili_session.py"
+    },
+    {
+      "file": "browser_runtime.py",
+      "source": "src/browser_runtime.py"
     },
     {
       "file": "video_mixdown.py",
@@ -930,6 +1070,10 @@
       "source": "src/agent_pitch.py"
     },
     {
+      "file": "agent_primitives.py",
+      "source": "src/agent_primitives.py"
+    },
+    {
       "file": "agent_separation_repair.py",
       "source": "src/agent_separation_repair.py"
     },
@@ -1142,6 +1286,10 @@
       "source": "src/mixdown_export.py"
     },
     {
+      "file": "mixdown_ffmpeg.py",
+      "source": "src/mixdown_ffmpeg.py"
+    },
+    {
       "file": "mixdown_runtime.py",
       "source": "src/mixdown_runtime.py"
     },
@@ -1188,6 +1336,138 @@
     {
       "file": "Start-Quick.bat",
       "source": "tools/portable/Start-Quick.bat"
+    },
+    {
+      "file": "separate_audio.py",
+      "source": "src/separate_audio.py"
+    },
+    {
+      "file": "vwa_paths.py",
+      "source": "src/vwa_paths.py"
+    },
+    {
+      "file": "vwa_io.py",
+      "source": "src/vwa_io.py"
+    },
+    {
+      "file": "vwa_net.py",
+      "source": "src/vwa_net.py"
+    },
+    {
+      "file": "mixdown_metering.py",
+      "source": "src/mixdown_metering.py"
+    },
+    {
+      "file": "workflow_graph.py",
+      "source": "src/workflow_graph.py"
+    },
+    {
+      "file": "tuning_plan_core.py",
+      "source": "src/tuning_plan_core.py"
+    },
+    {
+      "file": "vwa_config.py",
+      "source": "src/vwa_config.py"
+    },
+    {
+      "file": "task_index.py",
+      "source": "src/task_index.py"
+    },
+    {
+      "file": "crash_dump.py",
+      "source": "src/crash_dump.py"
+    },
+    {
+      "file": "list_diff.py",
+      "source": "src/list_diff.py"
+    },
+    {
+      "file": "quick_list_model.py",
+      "source": "src/quick_list_model.py"
+    },
+    {
+      "file": "chorus_viewmodel.py",
+      "source": "src/chorus_viewmodel.py"
+    },
+    {
+      "file": "tuning_viewmodel.py",
+      "source": "src/tuning_viewmodel.py"
+    },
+    {
+      "file": "worker_runner.py",
+      "source": "src/worker_runner.py"
+    },
+    {
+      "file": "tutorial_catalog.py",
+      "source": "src/tutorial_catalog.py"
+    },
+    {
+      "file": "workspace_ui_state.py",
+      "source": "src/workspace_ui_state.py"
+    },
+    {
+      "file": "quick_ui/ShortcutSheetDialog.qml",
+      "source": "src/quick_ui/ShortcutSheetDialog.qml"
+    },
+    {
+      "file": "quick_ui/WhatsNewDialog.qml",
+      "source": "src/quick_ui/WhatsNewDialog.qml"
+    },
+    {
+      "file": "quick_ui/TutorialScenarioGrid.qml",
+      "source": "src/quick_ui/TutorialScenarioGrid.qml"
+    },
+    {
+      "file": "quick_ui/WorkspaceStage.qml",
+      "source": "src/quick_ui/WorkspaceStage.qml"
+    },
+    {
+      "file": "quick_ui/SettingsChoiceChip.qml",
+      "source": "src/quick_ui/SettingsChoiceChip.qml"
+    },
+    {
+      "file": "quick_ui/SettingsMotionChoice.qml",
+      "source": "src/quick_ui/SettingsMotionChoice.qml"
+    },
+    {
+      "file": "quick_ui/SettingsDialogs.qml",
+      "source": "src/quick_ui/SettingsDialogs.qml"
+    },
+    {
+      "file": "quick_ui/SettingsAppearanceSection.qml",
+      "source": "src/quick_ui/SettingsAppearanceSection.qml"
+    },
+    {
+      "file": "quick_ui/SettingsStorageSection.qml",
+      "source": "src/quick_ui/SettingsStorageSection.qml"
+    },
+    {
+      "file": "quick_ui/SettingsPresetsSection.qml",
+      "source": "src/quick_ui/SettingsPresetsSection.qml"
+    },
+    {
+      "file": "quick_ui/SettingsUpdateSection.qml",
+      "source": "src/quick_ui/SettingsUpdateSection.qml"
+    },
+    {
+      "file": "quick_ui/SettingsSupportAboutSection.qml",
+      "source": "src/quick_ui/SettingsSupportAboutSection.qml"
+    },
+    {
+      "file": "quick_ui/TuningControls.qml",
+      "source": "src/quick_ui/TuningControls.qml"
+    },
+    {
+      "file": "quick_ui/TuningDialogs.qml",
+      "source": "src/quick_ui/TuningDialogs.qml"
+    },
+    {
+      "file": "quick_ui/TuningInspectorNoteStyle.qml",
+      "source": "src/quick_ui/TuningInspectorNoteStyle.qml"
+    },
+    {
+      "file": "quick_ui/TuningInspectorSourceResult.qml",
+      "source": "src/quick_ui/TuningInspectorSourceResult.qml"
     }
   ]
 }

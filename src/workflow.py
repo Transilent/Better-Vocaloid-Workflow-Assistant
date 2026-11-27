@@ -4,9 +4,8 @@ import math
 from common import ROOT, atomic_json, workspace_state, load_config
 from preparation_languages import LANGUAGES, effective_preparation_options
 import style_catalog
+from workflow_graph import LINKS, NODES, default_graph, validate_graph
 
-NODES = {'source': '音乐输入', 'separation': '分离声部', 'midi': '生成 MIDI', 'subtitles': '导出字幕'}
-LINKS = {('source', 'separation'), ('separation', 'midi'), ('midi', 'subtitles')}
 DEFAULT_OPTIONS = {'language': 'zh', 'recognize_lyrics': True, 'zh_lyric_mode': 'hanzi',
                    'voice_mode': 'dual', 'midi_steps': 16, 'bpm':None, 'roformer_device': 'auto', 'separation_flow':'cascade',
                    'separation_device': 'dml', 'midi_device': 'dml', 'midi_backend':'v2',
@@ -23,33 +22,6 @@ EXPORT_PREFERENCE_KEYS = ('project_export_enabled', 'audio_export_enabled', 'pro
                           'reference_breathiness', 'reference_voicing', 'dynamics_strength', 'expression_density',
                           'performance_style', 'style_strength', 'style_scope','style_pitch','style_detail',
                           'style_technique','technique_strength','technique_pitch')
-
-
-def default_graph(subtitles=False):
-    names = ['source', 'separation', 'midi'] + (['subtitles'] if subtitles else [])
-    return {'nodes': {name: [60 + index * 235, 150] for index, name in enumerate(names)},
-            'edges': [list(pair) for pair in zip(names, names[1:])]}
-
-
-def validate_graph(graph):
-    if not isinstance(graph, dict) or set(graph) != {'nodes', 'edges'}:
-        raise ValueError('工作流格式无效。')
-    nodes, edges = graph['nodes'], graph['edges']
-    if not isinstance(nodes, dict) or not nodes or set(nodes) - set(NODES):
-        raise ValueError('工作流包含未知节点。')
-    for position in nodes.values():
-        if (not isinstance(position, list) or len(position) != 2 or
-                any(not isinstance(v, (float, int)) or not math.isfinite(v) or abs(v) > 10000 for v in position)):
-            raise ValueError('节点坐标无效。')
-    if not isinstance(edges, list) or any(not isinstance(e, list) or len(e) != 2 or any(not isinstance(n, str) for n in e) for e in edges):
-        raise ValueError('工作流连接无效。')
-    pairs = [tuple(e) for e in edges]
-    if any(p not in LINKS or any(n not in nodes for n in p) for p in pairs) or len(set(pairs)) != len(pairs):
-        raise ValueError('连接顺序应为：音乐输入 → 分离声部 → MIDI → 字幕。')
-    names = ['source', 'separation', 'midi', 'subtitles'][:len(nodes)]
-    if set(nodes) != set(names) or set(pairs) != set(zip(names, names[1:])) or len(nodes) < 2:
-        raise ValueError('请连接音乐输入和分离节点；后续节点需接入同一条流程。')
-    return 'subtitles' if 'subtitles' in nodes else 'midi' if 'midi' in nodes else 'separation'
 
 
 def validate_options(options):
@@ -82,8 +54,8 @@ def validate_options(options):
     result['style_detail'] = detail_settings(result['style_detail'])
     result.update(technique_settings(result))
     if type(result['style_pitch']) is not bool:raise ValueError('风格音高开关必须为布尔值。')
-    from project_exports import validate_options
-    validate_options(result['project_formats'],result['audio_formats'])
+    from project_io import validate_export_options
+    validate_export_options(result['project_formats'],result['audio_formats'])
     from music_timing import validate_bpm
     result['bpm'] = validate_bpm(result['bpm'])
     if type(result['export_pitch']) is not bool or type(result['include_instrumental']) is not bool:

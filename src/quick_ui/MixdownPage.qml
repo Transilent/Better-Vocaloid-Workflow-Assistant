@@ -647,8 +647,9 @@ Item {
                 enabled: !page.busy && !page.loading
                 text: page.vwaTr("预设") + " ▾"
                 onClicked: mixdownPresetMenu.popup()
-                Menu {
+                UiMenu {
                     id: mixdownPresetMenu
+                    theme: page.theme
                     MenuItem {
                         objectName: "mixdownSavePreset"
                         text: page.vwaTr("另存当前为预设…")
@@ -794,8 +795,8 @@ Item {
                     contentHeight: channelRow.height
                     boundsBehavior: Flickable.StopAtBounds
                     interactive: contentWidth > width || contentHeight > height
-                    ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded }
-                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                    ScrollBar.horizontal: UiScrollBar { theme: page.theme }
+                    ScrollBar.vertical: UiScrollBar { theme: page.theme }
 
                     WheelHandler {
                         enabled: channelViewport.contentWidth > channelViewport.width
@@ -1002,7 +1003,7 @@ Item {
                         : page.analysisMode === "gr" ? 486
                         : page.analysisMode === "align" ? 400
                         : page.compact ? (page.showCompactEqDetails ? 440 : 112) : 408
-                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                    ScrollBar.vertical: UiScrollBar { theme: page.theme }
 
                     StackLayout {
                         width: analysisScroll.width
@@ -1265,8 +1266,9 @@ Item {
                     text: page.vwaTr("导出选项")
                     ToolTip.text: page.vwaTr("输出位置、打开 WAV 或所在文件夹")
                     onClicked: outputMenu.open()
-                    Menu {
+                    UiMenu {
                         id: outputMenu
+                        theme: page.theme
                         y: outputMenuButton.height
                         width: Math.round(284 * page.theme.scale)
                         MenuItem {
@@ -1352,8 +1354,9 @@ Item {
                     font.weight: Font.DemiBold
                     textFormat: Text.PlainText
                 }
-                ProgressBar {
+                UiProgressBar {
                     objectName: "mixdownExportProgress"
+                    theme: page.theme
                     Layout.fillWidth: true
                     from: 0
                     to: 1
@@ -1758,12 +1761,12 @@ Item {
         }
     }
 
-    Dialog {
+    UiDialog {
         id: presetReviewDialog
         objectName: "mixdownPresetReview"
+        theme: page.theme
         readonly property var plan: page.view.presetPreview || ({})
         title: page.vwaTr("预览混音预设")
-        modal: true
         anchors.centerIn: parent
         width: Math.min(parent.width - 28, Math.round(570 * page.theme.scale))
         closePolicy: Popup.CloseOnEscape
@@ -1782,16 +1785,18 @@ Item {
                 font.pixelSize: Math.round(14 * page.theme.scale)
                 font.weight: Font.DemiBold
             }
-            CheckBox {
+            UiCheckBox {
                 objectName: "mixdownPresetIncludeWidth"
+                theme: page.theme
                 visible: !!presetReviewDialog.plan.hasWidth
                 text: page.vwaTr("同时应用总输出宽度")
                 checked: !!presetReviewDialog.plan.includeWidth
                 onClicked: page.controller.previewPreset(presetReviewDialog.plan.key, checked, tracksScope.checked)
             }
-            CheckBox {
+            UiCheckBox {
                 id: tracksScope
                 objectName: "mixdownPresetIncludeTracks"
+                theme: page.theme
                 visible: !!presetReviewDialog.plan.hasTracks
                 text: presetReviewDialog.plan.hasDeess
                     ? (presetReviewDialog.plan.hasTrackTemplate ? page.vwaTr("同时应用声像、混响发送与去齿音")
@@ -1939,12 +1944,11 @@ Item {
         onRejected: page.noteDialogClosed()
     }
 
-    Dialog {
+    UiDialog {
         id: savePresetDialog
         objectName: "mixdownSavePresetDialog"
+        theme: page.theme
         title: page.vwaTr("追加混音预设")
-        modal: true
-        anchors.centerIn: parent
         width: Math.min(parent.width - Math.round(36 * page.theme.scale), Math.round(410 * page.theme.scale))
         closePolicy: Popup.CloseOnEscape
         onOpened: {
@@ -1985,8 +1989,9 @@ Item {
                         savePresetDialog.close();
                 }
             }
-            CheckBox {
+            UiCheckBox {
                 id: saveWidth
+                theme: page.theme
                 text: page.vwaTr("同时保存总输出宽度")
             }
         }

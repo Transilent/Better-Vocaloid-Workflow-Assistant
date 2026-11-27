@@ -188,7 +188,7 @@ ColumnLayout {
                 boundsBehavior: Flickable.StopAtBounds
                 flickableDirection: Flickable.VerticalFlick
                 interactive: contentHeight > height && !root.draggingId
-                ScrollBar.vertical: ScrollBar { policy: laneViewport.contentHeight > laneViewport.height ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
+                ScrollBar.vertical: UiScrollBar { theme: root.theme; policy: laneViewport.contentHeight > laneViewport.height ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
 
                 ColumnLayout {
                     id: laneColumn

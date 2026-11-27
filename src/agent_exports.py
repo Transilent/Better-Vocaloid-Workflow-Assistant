@@ -45,8 +45,13 @@ class ExportError(ValueError):
             self.retryable = retryable
 
 
-def _io_path(path: Any) -> Path:
-    return Path(native_path(path))
+from agent_primitives import (
+    canonical_json as _canonical,
+    canonical_json_bytes as _canonical_bytes,
+    finite_number as _finite_number,
+    io_path as _io_path,
+    json_digest as _digest,
+)
 
 
 _SCHEMA_VERSION = 1
@@ -88,43 +93,14 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _canonical(value: Any) -> str:
-    try:
-        return json.dumps(
-            value, ensure_ascii=False, allow_nan=False, sort_keys=True,
-            separators=(",", ":"),
-        )
-    except (TypeError, ValueError, UnicodeError, RecursionError) as error:
-        raise ValueError("值必须只包含有限的 JSON 数据。") from error
-
-
-def _digest(value: Any) -> str:
-    return _sha256(_canonical(value).encode("utf-8"))
-
-
-def _canonical_bytes(value: Any, *, pretty: bool = False) -> bytes:
-    options = {"ensure_ascii": False, "allow_nan": False, "sort_keys": True}
-    if pretty:
-        options["indent"] = 2
-    else:
-        options["separators"] = (",", ":")
-    text = json.dumps(value, **options)
-    if pretty:
-        text += "\n"
-    return text.encode("utf-8")
+# Canonical JSON / digest / finite-number helpers imported from agent_primitives above.
 
 
 def _normalise_text(value: str) -> str:
     return unicodedata.normalize("NFC", value)
 
 
-def _finite_number(value: Any, label: str, *, minimum: float, maximum: float) -> float:
-    if type(value) not in (int, float) or not math.isfinite(float(value)):
-        raise ValueError(label + "必须是有限数值。")
-    number = float(value)
-    if not minimum <= number <= maximum:
-        raise ValueError(f"{label}必须在 {minimum:g} 到 {maximum:g} 之间。")
-    return number
+# _finite_number imported from agent_primitives above.
 
 
 def _normalise_formats(formats: Any, language: str) -> list[str]:

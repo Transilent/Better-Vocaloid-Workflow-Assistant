@@ -18,7 +18,7 @@ import re
 import shutil
 import uuid
 
-from agent_control import ControlError, io_path, safe_path
+from agent_primitives import ControlError, io_path, safe_path
 
 
 _SCHEMA = 1

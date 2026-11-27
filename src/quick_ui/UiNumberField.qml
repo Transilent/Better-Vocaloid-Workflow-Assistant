@@ -64,7 +64,7 @@ TextField {
     horizontalAlignment: TextInput.AlignHCenter
     color: theme.text
     selectionColor: theme.accent
-    selectedTextColor: theme.onAccent
+    selectedTextColor: theme.accentInk !== undefined ? theme.accentInk : "#ffffff"
     font.pixelSize: Math.round(12 * theme.scale)
     font.family: "Consolas"
     inputMethodHints: Qt.ImhFormattedNumbersOnly

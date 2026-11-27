@@ -13,9 +13,13 @@ the controller must close this instance and create a new one on its owner thread
 from __future__ import annotations
 
 import ctypes
+import logging
 from pathlib import Path
+import sys
 import threading
 from typing import Any, Mapping
+
+_LOG = logging.getLogger(__name__)
 
 import numpy as np
 
@@ -188,7 +192,44 @@ def _bind_library(dll_path: Path) -> ctypes.CDLL:
         ctypes.c_uint64,
     ]
     library.vwa_output_pull.restype = ctypes.c_uint64
+    if hasattr(library, "vwa_output_create_for_device"):
+        library.vwa_output_create_for_device.argtypes = [
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_int32,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_char_p,
+            ctypes.c_size_t,
+        ]
+        library.vwa_output_create_for_device.restype = ctypes.c_int
+    if hasattr(library, "vwa_output_list_devices"):
+        library.vwa_output_list_devices.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
+        library.vwa_output_list_devices.restype = ctypes.c_int
     return library
+
+
+def list_output_devices(dll_path: str | Path) -> list[dict[str, Any]]:
+    """Enumerate active WASAPI playback devices from vwa_native_output.dll."""
+    import json
+
+    library_path = Path(dll_path).expanduser().resolve()
+    if not library_path.is_file():
+        return []
+    library = _bind_library(library_path)
+    if not hasattr(library, "vwa_output_list_devices"):
+        return []
+    buf = ctypes.create_string_buffer(32768)
+    count = int(library.vwa_output_list_devices(buf, len(buf)))
+    if count < 0:
+        return []
+    try:
+        rows = json.loads(_decode_c_string(buf.value) or "[]")
+    except ValueError:
+        return []
+    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
 
 class NativeOutput:
@@ -202,6 +243,7 @@ class NativeOutput:
         capacity_frames: int = 4096,
         period_frames: int = 256,
         mode: str = "null",
+        device_index: int = -1,
     ) -> None:
         mode_id = {"null": 0, "wasapi": 1}.get(str(mode).lower())
         if mode_id is None:
@@ -232,16 +274,29 @@ class NativeOutput:
 
         create_error = ctypes.create_string_buffer(_ERROR_CAPACITY)
         handle = ctypes.c_void_p()
-        result = self._dll.vwa_output_create(
-            mode_id,
-            sample_rate,
-            channels,
-            capacity_frames,
-            period_frames,
-            ctypes.byref(handle),
-            create_error,
-            len(create_error),
-        )
+        if int(device_index) >= 0 and hasattr(self._dll, "vwa_output_create_for_device"):
+            result = self._dll.vwa_output_create_for_device(
+                mode_id,
+                sample_rate,
+                channels,
+                capacity_frames,
+                period_frames,
+                int(device_index),
+                ctypes.byref(handle),
+                create_error,
+                len(create_error),
+            )
+        else:
+            result = self._dll.vwa_output_create(
+                mode_id,
+                sample_rate,
+                channels,
+                capacity_frames,
+                period_frames,
+                ctypes.byref(handle),
+                create_error,
+                len(create_error),
+            )
         if result != 0 or not handle.value:
             message = _decode_c_string(create_error.value)
             raise NativeOutputError(message or f"native output create failed: {result}")
@@ -492,8 +547,9 @@ class NativeOutput:
     def __del__(self) -> None:
         try:
             self.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            if not sys.is_finalizing():
+                _LOG.debug("native output __del__ close ignored: %s", exc)
 
 
 __all__ = ["NativeDeviceError", "NativeOutput", "NativeOutputError"]

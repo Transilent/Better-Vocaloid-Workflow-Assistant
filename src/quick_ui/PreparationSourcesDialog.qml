@@ -2,13 +2,12 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-Dialog {
+UiDialog {
     id: dialog
     function vwaTr(message) {
         return typeof quickTranslation !== "undefined" ? quickTranslation.text(message) : message
     }
     objectName: lyricPurpose === "subtitles" ? "subtitleSourcesDialog" : "preparationSourcesDialog"
-    required property QtObject theme
     required property QtObject controller
     signal componentsRequested()
     signal lyricQuerySubmitted(string query)
@@ -19,9 +18,6 @@ Dialog {
     readonly property var view: controller.view
     readonly property var network: view.network
 
-    parent: Overlay.overlay
-    anchors.centerIn: parent
-    modal: true
     title: ({lyrics:dialog.vwaTr("核对网易云版本"), download:dialog.vwaTr("B站下载与账号"), check:dialog.vwaTr("检查准备组件")})[pane]
     width: Math.min(parent.width - 42, Math.round(720 * theme.scale))
     height: Math.min(parent.height - 48, Math.round((pane === "lyrics" ? 610 : pane === "download" ? 510 : 340) * theme.scale))
@@ -132,8 +128,9 @@ Dialog {
             Layout.fillHeight: visible
             visible: dialog.pane === "download"
             Body { text: dialog.vwaTr("可用同一 BV 的本地原视频，或按此处的超时、重试和登录设置下载。") }
-            CheckBox {
+            UiCheckBox {
                 id: useLogin
+                theme: dialog.theme
                 text: dialog.vwaTr("下载使用 B站登录状态")
                 checked: dialog.network.use_login
                 enabled: !dialog.view.busy && dialog.view.networkLoaded

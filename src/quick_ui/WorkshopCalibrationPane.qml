@@ -68,7 +68,7 @@ Item {
                         Text {
                             anchors.centerIn: parent
                             text: index < pane.step ? "✓" : String(index + 1)
-                            color: index === pane.step ? pane.theme.onAccent : index < pane.step ? pane.theme.success : pane.theme.muted
+                            color: index === pane.step ? pane.theme.accentInk : index < pane.step ? pane.theme.success : pane.theme.muted
                             font.pixelSize: Math.round(12 * pane.unit)
                             font.weight: Font.DemiBold
                         }
@@ -422,8 +422,9 @@ Item {
                                 }
                             }
                             PathLabel { text: pane.leaf(pane.fit.renders); fullPath: pane.fit.renders || "" }
-                            ProgressBar {
+                            UiProgressBar {
                                 objectName: "calibrationTrialProgress"
+                                theme: pane.theme
                                 Layout.fillWidth: true
                                 from: 0
                                 to: 7

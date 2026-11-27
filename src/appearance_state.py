@@ -4,7 +4,13 @@ from common import ROOT, atomic_json, workspace_state
 from i18n import normalize_language
 
 
-DEFAULTS = {'ui_scale': 100, 'material': 'glass', 'reduce_motion': False, 'ui_language': 'zh-CN'}
+DEFAULTS = {
+    'ui_scale': 100,
+    'material': 'glass',
+    'reduce_motion': False,
+    'ui_language': 'zh-CN',
+    'render_backend': 'auto',
+}
 
 
 def normalize(values):
@@ -17,6 +23,8 @@ def normalize(values):
         result['material'] = values['material']
     if type(values.get('reduce_motion')) is bool:
         result['reduce_motion'] = values['reduce_motion']
+    if values.get('render_backend') in ('auto', 'software'):
+        result['render_backend'] = values['render_backend']
     return result
 
 

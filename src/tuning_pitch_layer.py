@@ -21,13 +21,12 @@ MAX_BYTES = 224 * 1024
 MIN_NOTE_SECONDS = .08
 MIN_STROKE_SECONDS = .012
 EDGE_SECONDS = .018
+from tuning_pitch_math import CAPACITY, LIMIT, PROTECTED, mix_pitch_samples, pitch_tick_grid
+
 UNSUPPORTED = '此工程格式暂不支持手绘音高。'
-PROTECTED = '此音符或片段的原生音高受保护。'
 SHORT = '音符太短，无法留出手绘过渡。'
 SPAN = '请在一个演唱音符内画出一段音高。'
 BOUNDS = '手绘范围超出当前音符，请先擦除相关笔触。'
-CAPACITY = '手绘音高超过当前工程曲线容量。'
-LIMIT = '手绘与原曲线合成后超出音高范围；请缩小偏移。'
 
 
 def normalize_strokes(rows):
@@ -419,38 +418,7 @@ def _singing_lyric(lyric):
     return text not in ('', 'r', 'ap', '-', 'sil', 'pau', 'sp', 'br') and not (text.startswith('br') and text[2:].isdigit())
 
 
-def mix_pitch_samples(grid, native, styled, spans, low, high, *, cancel):
-    """Replace only the style contribution inside the hand-drawn intervals."""
-    import numpy as np
-
-    result = styled.copy()
-    for i, span in enumerate(spans):
-        cancel()
-        xs, ys = zip(*span.points)
-        a, b = xs[0], xs[-1]
-        previous = spans[i - 1].points[-1][0] if i else span.left - 1
-        left = max(span.left, previous + 1, (previous + a) // 2) if i else span.left
-        right = min(span.right, (b + spans[i + 1].points[0][0]) // 2) if i + 1 < len(spans) else span.right
-        lo, first, last, hi = np.searchsorted(grid, [left, a, b, right])
-        value = native[first:last + 1] + np.interp(grid[first:last + 1], xs, ys)
-        if np.any(value < low - 1e-8) or np.any(value > high + 1e-8):
-            raise ValueError(LIMIT)
-        result[first:last + 1] = value
-        if lo < first:
-            result[lo:first] = np.interp(grid[lo:first], [left, a], [styled[lo], value[0]])
-        if last < hi:
-            result[last + 1:hi] = np.interp(grid[last + 1:hi], [b, right], [value[-1], styled[hi]])
-    return result
-
-
-def pitch_tick_grid(spans, limit):
-    import numpy as np
-
-    lo = min(span.left for span in spans)
-    hi = max(span.right for span in spans)
-    if hi - lo + 1 > limit:
-        raise ValueError(CAPACITY)
-    return np.arange(lo, hi + 1, dtype=np.int64)
+# mix_pitch_samples and pitch_tick_grid re-exported from tuning_pitch_math above.
 
 
 def apply_layer(base, output, format, spans, *, cancel):

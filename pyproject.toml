@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vwa"
+version = "2.1.0"
+description = "Vocaloid Workflow Assistant — desktop vocal production, tuning, chorus, mixdown and publishing suite."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+src = ["src", "tools", "tests"]
+extend-exclude = [
+    ".git",
+    "__pycache__",
+    "build",
+    "dist",
+    "app/src",
+    "work",
+    "outputs",
+]
+
+[tool.ruff.lint]
+# Critical runtime correctness & undefined-name rules enforced in CI;
+# broaden gradually as legacy modules are cleaned up.
+select = ["E9", "F63", "F7", "F82"]
+ignore = []
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.pyright]
+pythonVersion = "3.12"
+pythonPlatform = "Windows"
+typeCheckingMode = "basic"
+include = ["src", "tools"]
+exclude = [
+    "**/__pycache__",
+    "app/src",
+    "build",
+    "dist",
+    "work",
+    "outputs",
+]
+reportMissingImports = "warning"
+reportMissingModuleSource = "none"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+markers = [
+    "l0: Fast isolated unit and architecture guard tests (no GPU, network, or heavy media required)",
+    "l1: Integration tests requiring Qt runtime or native binaries",
+    "l2: Real-material DSP and end-to-end tests",
+]

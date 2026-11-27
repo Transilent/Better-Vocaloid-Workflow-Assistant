@@ -182,9 +182,26 @@ def _analyze_reference(reference, notes, options, *, cancel, cache):
     return measured
 
 
-def _reference(source, output, format, layout, indices, options, *, cancel, progress, cache):
-    from tuning_engine import sources_for
+def sources_for(options, indices):
+    rows = options['reference_sources']
+    mapping = {}
+    for row in rows:
+        if not isinstance(row, dict) or type(row.get('track_index')) is not int:
+            raise ValueError('参考音频缺少明确的工程轨索引。')
+        index = row['track_index']
+        voice = row.get('voice')
+        path = row.get('path')
+        if index in mapping or not isinstance(voice, str) or voice not in ('lead', 'backing', 'vocals'):
+            raise ValueError('参考声部映射重复或名称无效。')
+        if not isinstance(path, str) or not path.strip() or not Path(path).is_file():
+            raise ValueError('参考音频不存在。')
+        mapping[index] = {'voice': voice, 'path': Path(path).resolve(), 'cache_key': 'track-' + str(index)}
+    if set(mapping) != set(indices):
+        raise ValueError('每条所选演唱轨都需要明确对应的参考音频；不能把主唱静默套用到和声。')
+    return [mapping[index] for index in indices]
 
+
+def _reference(source, output, format, layout, indices, options, *, cancel, progress, cache):
     changes, skipped, reports, incomplete = [], [], [], False
     clock = layout.clock
     for index, reference in zip(indices, sources_for(options, indices)):
@@ -257,7 +274,7 @@ def _retained_curve(format, name, current, prior):
 
 
 def _retained(source, output, format, layout, indices, options, *, cancel, progress):
-    from tuning_workflow import read_source, score_layout
+    from project_io import read_source, score_layout
 
     if options['retained_match_policy'] != 'exact':
         raise ValueError('当前格式的沿用参数需要音符、片段和时间轴完全匹配。')

@@ -53,23 +53,7 @@ def read_source_info(job):
     return data
 
 
-def inspect_video(path, ffmpeg=None, *, require_audio=True):
-    path = clean_path(path)
-    if not path.is_file():
-        raise ValueError("找不到成品视频，请选择完整文件路径。")
-    result = subprocess.run([ffmpeg or load_config()["ffmpeg"], "-hide_banner", "-i", str(path)],
-                            capture_output=True, encoding="utf-8", errors="replace",
-                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=30)
-    text = result.stderr
-    duration = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", text)
-    if not duration or not re.search(r"Stream .*Video:", text) or (require_audio and not re.search(r"Stream .*Audio:", text)):
-        raise ValueError("成品需要同时包含视频和音频，且能读取完整时长。" if require_audio
-                         else "原视频需要包含可读取的画面和时长。")
-    hours, minutes, seconds = map(float, duration.groups())
-    size = re.search(r"Video:.*?\b(\d{2,5})x(\d{2,5})\b", text)
-    return {"path": str(path), "bytes": path.stat().st_size,
-            "duration": hours * 3600 + minutes * 60 + seconds,
-            "width": int(size[1]) if size else None, "height": int(size[2]) if size else None}
+from project_io import inspect_video
 
 
 def extract_cover(video, destination, seconds, ffmpeg=None, *, require_audio=True):

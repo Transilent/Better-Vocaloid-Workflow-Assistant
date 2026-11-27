@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$GxxPath = 'D:\mingw64\bin\g++.exe',
+    [string]$GxxPath = '',
     [string]$StretchSourceDir = '',
     [string]$LinearIncludeDir = '',
     [string]$OutputDirectory = '',
@@ -28,8 +28,16 @@ if (-not $OutputDirectory) {
 }
 $OutputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 
-if (-not (Test-Path -LiteralPath $GxxPath)) {
-    throw "g++ not found at explicit local path: $GxxPath"
+if (-not $GxxPath) {
+    $cmd = Get-Command g++ -ErrorAction SilentlyContinue
+    if ($cmd) {
+        $GxxPath = $cmd.Source
+    } elseif (Test-Path -LiteralPath 'D:\mingw64\bin\g++.exe') {
+        $GxxPath = 'D:\mingw64\bin\g++.exe'
+    }
+}
+if (-not $GxxPath -or -not (Test-Path -LiteralPath $GxxPath)) {
+    throw "g++ not found on PATH or at explicit path '$GxxPath'. Install MinGW-w64 or pass -GxxPath."
 }
 $stretchHeader = Join-Path $StretchSourceDir 'signalsmith-stretch.h'
 $stftHeader = Join-Path $LinearIncludeDir 'signalsmith-linear\stft.h'

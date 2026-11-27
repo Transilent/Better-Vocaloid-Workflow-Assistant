@@ -371,3 +371,108 @@ def reset_vocal_notes(project, track_id, spans, *, lock_original=False):
         replacement = (Edit(track_id, 'pitch', start, end, 0., manual=True, basis='原音保留'),) if lock_original else ()
         updated = updated.replace_region(track_id, 'pitch', start, end, replacement)
     return updated
+
+
+FRAME = .01
+
+
+@dataclass(frozen=True)
+class Suggestion:
+    track: str
+    kind: str
+    start: float
+    end: float
+    value: float | None
+    detail: str
+    review: bool = False
+    from_score: bool = False
+    points: tuple = ()
+    anchors: tuple = ()
+    route: str = ''
+    timing_residual_ms: int | None = None
+    restore_timing: bool = False
+    category: str = ''
+    severity: str = ''
+    action_hint: str = ''
+    target_octave: int | None = None
+
+    @property
+    def can_apply(self):
+        return (self.restore_timing or bool(self.points) or self.target_octave is not None
+                or (self.value is not None and abs(self.value) > 1e-6))
+
+
+def _runs(mask):
+    edges = np.flatnonzero(np.diff(np.r_[False, mask, False]))
+    return zip(edges[::2], edges[1::2])
+
+
+def _project_slice(values, offset, indices):
+    local = indices - round(offset / FRAME)
+    valid = (local >= 0) & (local < len(values))
+    output = values[np.clip(local, 0, len(values) - 1)].copy()
+    output[~valid] = 0
+    return output
+
+
+def quiet_timing(track, features):
+    """Return a predicate for guarded cuts on this track's project clock."""
+    def quiet(first, last):
+        grid = np.arange(round(first / FRAME), round(last / FRAME))
+        return not _project_slice(features.active, track.offset, grid).any()
+
+    return quiet
+
+
+def valley_timing(track, features):
+    """Return a snapper that nudges local timing knots toward low-energy valleys."""
+    energy = features.energy
+
+    def snap(position, radius):
+        grid = np.arange(round((position - radius) / FRAME), round((position + radius) / FRAME) + 1)
+        if not len(grid):
+            return position
+        values = _project_slice(energy, track.offset, grid)
+        # Prefer quiet gaps / note boundaries while breaking ties toward the nominal spot.
+        dist = np.abs(grid * FRAME - position) / max(radius, FRAME)
+        scale = float(np.max(values)) if len(values) else 0.
+        if scale <= 1e-8:
+            return position
+        score = values / scale + .08 * dist
+        return float(grid[int(np.argmin(score))] * FRAME)
+
+    return snap
+
+
+def timing_suggestion(track, span, fit, route, source, review_reason=''):
+    from i18n import tr
+
+    if fit.movement is None:
+        method = tr('唱段边界过近，可扩展选区后再试')
+    elif fit.local:
+        method = tr('局部拉伸 · 基准 {0} ms', f'{fit.movement * 1000:+.0f}')
+    elif fit.movement:
+        method = tr('整句平移 {0} ms', f'{fit.movement * 1000:+.0f}')
+    else:
+        method = tr('原录音时序已接近参照' if fit.residual_ms <= 25 else '该力度下时序调整很小')
+    detail = f'{tr(route)} · {source} · {method}'
+    if fit.anchors:
+        detail += ' · ' + tr('{0} 个边界 · 中位余差 {1} ms', len(fit.anchors), fit.residual_ms)
+    if review_reason:
+        detail += ' · ' + tr(review_reason)
+    elif fit.review and fit.movement is not None:
+        detail += ' · ' + tr('边界意见不一致，建议试听')
+    is_review = fit.review or bool(review_reason)
+    cat = 'timing_large' if (is_review and abs(fit.movement or 0.) > .16) else ('timing_review' if is_review else '')
+    sev = 'high' if (is_review and abs(fit.movement or 0.) > .22) else ('medium' if is_review else '')
+    hint = ('建议点击跳转试听节奏后再决定是否接受，或在唱段对齐中手动微调菱形锚点'
+            if is_review else '')
+    return Suggestion(track, 'timing', *span, fit.movement, detail, is_review,
+                      points=fit.points, anchors=fit.anchors, route=route,
+                      timing_residual_ms=fit.residual_ms if fit.anchors else None,
+                      category=cat, severity=sev, action_hint=hint)
+
+
+def _pitch_runs(midi, step, *, note_edits=()):
+    for note in segment_vocal_notes(midi, step, note_edits=note_edits):
+        yield note.start, note.end, note.center_midi

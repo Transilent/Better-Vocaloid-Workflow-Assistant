@@ -11,33 +11,28 @@ from PySide6.QtGui import QDesktopServices, QGuiApplication
 
 import startup_preferences
 import storage
+import tutorial_catalog
 import updater
 from common import ROOT, environment_value, job_directories, output_directory
 from download_sources import read_small
 from i18n import tr
-from operation_diagnostics import LOG_DIR, clock_text, journal_for, support_lines
+from operation_diagnostics import LOG_DIR, clock_text, export_diagnostic_bundle, journal_for, support_lines
 from quick_work import WorkerLane
 from support_info import FEEDBACK_URL, QQ_GROUP
 from task_store import format_size, size
 from workspace_settings import SettingsState, load_update_recovery
 
-
-TOUR_STEP_COUNT = 7
+TOUR_STEP_COUNT = len(tutorial_catalog.TOUR_STEPS)
 MAX_PRESET_INSPECT_CHARS = 256 * 1024
 
 
 def _existing_directory(value):
-    """Find a usable directory for disk-space reporting without touching files."""
-    try:
-        path = Path(value)
-    except (TypeError, ValueError):
-        return None
-    for candidate in (path, *path.parents):
+    try: path = Path(value)
+    except (TypeError, ValueError): return None
+    for c in (path, *path.parents):
         try:
-            if candidate.is_dir():
-                return candidate
-        except OSError:
-            continue
+            if c.is_dir(): return c
+        except OSError: continue
     return None
 
 
@@ -211,28 +206,25 @@ class QuickSupport(QObject):
         return self.state.startup_view
 
     @Property(str, constant=True)
-    def qqGroup(self):
-        return QQ_GROUP
-
+    def qqGroup(self): return QQ_GROUP
     @Property(int, constant=True)
-    def tutorialStepCount(self):
-        return TOUR_STEP_COUNT
-
+    def tutorialStepCount(self): return TOUR_STEP_COUNT
+    @Property('QVariantList', constant=True)
+    def scenarioCards(self): return [dict(x) for x in tutorial_catalog.SCENARIO_CARDS]
+    @Property('QVariantList', constant=True)
+    def whatsNewItems(self): return [dict(x) for x in tutorial_catalog.WHATS_NEW_HIGHLIGHTS]
     @Property(str, constant=True)
-    def currentVersion(self):
-        return self.version
-
+    def whatsNewVersion(self): return tutorial_catalog.FEATURE_HIGHLIGHTS_VERSION
+    @Property('QVariantList', constant=True)
+    def shortcutGroups(self): return [dict(x) for x in tutorial_catalog.SHORTCUT_GROUPS]
+    @Property(str, constant=True)
+    def currentVersion(self): return self.version
     @Property(bool, constant=True)
-    def canApplyProgramUpdates(self):
-        return self._can_apply_updates
-
+    def canApplyProgramUpdates(self): return self._can_apply_updates
     @Property(bool, notify=workChanged)
-    def workBusy(self):
-        return bool(self._last_operation_names)
-
+    def workBusy(self): return bool(self._last_operation_names)
     @Property('QStringList', notify=workChanged)
-    def operationBlockers(self):
-        return list(self._last_operation_names)
+    def operationBlockers(self): return list(self._last_operation_names)
 
     def _active_operation_names(self):
         names = []
@@ -285,6 +277,18 @@ class QuickSupport(QObject):
             if getattr(mixdown, '_preview_pending', False) or (
                     preview_timer is not None and preview_timer.isActive()):
                 add('简易混音试听准备')
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+        try:
+            chorus = getattr(self.owner, '_chorus', None)
+            if chorus is not None and getattr(getattr(chorus, 'worker', None), 'kind', ''):
+                add('修音工作台')
+        except (AttributeError, RuntimeError, TypeError):
+            pass
+        try:
+            converter = getattr(self.owner, '_converter', None)
+            if converter is not None and getattr(getattr(converter, 'worker', None), 'kind', ''):
+                add('工程互转')
         except (AttributeError, RuntimeError, TypeError):
             pass
         try:
@@ -964,6 +968,8 @@ class QuickSupport(QObject):
     def begin_startup(self):
         if startup_preferences.tour_due(self.state.preferences):
             self.showTutorial()
+        elif startup_preferences.whats_new_due(tutorial_catalog.FEATURE_HIGHLIGHTS_VERSION, self.state.preferences):
+            self.state.show_whats_new(); self.startupChanged.emit()
         if self.state.open_recovered_pending():
             self.startupChanged.emit()
         self._auto_check = self.state.values['check_for_updates']
@@ -1108,6 +1114,11 @@ class QuickSupport(QObject):
         self._apply_restart_plan()
 
     @Slot()
+    def acknowledgeJustUpdated(self):
+        if self.state.acknowledge_just_updated(ROOT):
+            self.startupChanged.emit()
+
+    @Slot()
     def openRelease(self):
         version = self.state.release.get('version')
         url = updater.RELEASES + (f'/tag/v{version.removeprefix("v")}' if version else '/latest')
@@ -1137,15 +1148,29 @@ class QuickSupport(QObject):
         windows = sys.getwindowsversion() if sys.platform == 'win32' else None
         system = (f'Windows {11 if windows.build >= 22000 else 10} (build {windows.build})'
                   if windows else f'{platform.system()} {platform.release()}')
+        render_backend = str(self.state.values.get('render_backend', 'auto'))
+        if environment_value('VWA_RENDER_FALLBACK') == '1':
+            render_label = f'{render_backend} (auto-fallback: software)'
+        else:
+            render_label = render_backend
+        proxy_mode = str(self.state.values.get('network_proxy_mode', 'direct'))
+        native_dir = ROOT / 'components/native-audio'
+        native_status = ', '.join(
+            f'{dll}={"ok" if (native_dir / dll).is_file() else "missing"}'
+            for dll in ('vwa_chorus_pitch.dll', 'vwa_limiter.dll', 'vwa_native_output.dll')
+        )
         lines = [
             f'VWA: {self.version}', f'Qt Quick: {qVersion()}',
+            f'{tr("渲染后端")}: {render_label}',
             f'{tr("系统")}: {system} ({platform.machine()})',
             f'Python: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}',
             f'{tr("界面语言")}: {self.state.values["ui_language"]}',
             f'{tr("界面缩放")}: {self.state.values["ui_scale"]}%',
             f'{tr("准备任务状态")}: {task_state}',
             f'{tr("更新状态")}: {self.state.update["update_state"]}',
+            f'{tr("网络代理模式")}: {proxy_mode}',
             f'{tr("并行下载数")}: {self.state.values["download_workers"]}',
+            f'{tr("原生音频库")}: {native_status}',
             f'UTC: {datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S}',
             f'{tr("当前操作")}: {len(active)}',
         ]
@@ -1209,6 +1234,38 @@ class QuickSupport(QObject):
                                               else '无法访问剪贴板，可选中摘要手动复制。')
             self.diagnosticsChanged.emit()
 
+    @Slot(QUrl, result=bool)
+    def exportDiagnosticsBundle(self, url):
+        if self._diagnostic_lane.kind:
+            return False
+        if not url.isLocalFile():
+            self._diagnostics['message'] = tr('请选择本机保存路径。')
+            self.diagnosticsChanged.emit()
+            return False
+        target = url.toLocalFile()
+        summary_text = str(self._diagnostics.get('text') or '')
+        self._diagnostics.update(busy=True, message=tr('正在生成脱敏诊断包…'))
+        self.diagnosticsChanged.emit()
+
+        def finish(result, error):
+            self._diagnostics['busy'] = False
+            if error is not None:
+                self._diagnostics['message'] = tr('导出诊断包失败：') + str(error)[:400]
+            else:
+                self._diagnostics['message'] = tr('已导出脱敏诊断包：{0}', result.get('path', target))
+            self.diagnosticsChanged.emit()
+
+        def _export(_stop, _send):
+            import check_dependencies
+            return export_diagnostic_bundle(
+                target,
+                summary_text,
+                root=ROOT,
+                dependency_check=check_dependencies.check,
+            )
+
+        return self._diagnostic_lane.start('diagnostics-export', _export, finish)
+
     @Slot()
     def openDiagnosticLogs(self):
         folder = ROOT / LOG_DIR
@@ -1220,40 +1277,45 @@ class QuickSupport(QObject):
     def showTutorial(self):
         blockers = self._active_operation_names()
         if blockers:
-            self.state.update.update(message='请先完成 ' + '、'.join(blockers) + '，再查看入门教程。')
-            self.startupChanged.emit()
-            return False
-        self.state.show_tour()
+            self.state.update.update(message='请先完成 ' + '、'.join(blockers) + '，再查看入门教程。'); self.startupChanged.emit(); return False
+        self.state.show_tour(mode='scenarios'); self.startupChanged.emit(); return True
+
+    @Slot()
+    def startFullTour(self):
+        self.state.start_full_tour(); self.startupChanged.emit()
+
+    @Slot(str)
+    def chooseScenario(self, page_id):
+        self._finish_tutorial('completed')
+        if page_id and hasattr(self.owner, 'navigate'): self.owner.navigate(str(page_id))
+
+    @Slot()
+    def showWhatsNew(self):
+        self.state.show_whats_new(); self.startupChanged.emit()
+
+    @Slot()
+    def dismissWhatsNew(self):
+        try: self.state.dismiss_whats_new(tutorial_catalog.FEATURE_HIGHLIGHTS_VERSION)
+        except (OSError, ValueError) as exc: self.state.whats_new_open = False; self._error(exc)
         self.startupChanged.emit()
-        return True
 
     def _finish_tutorial(self, outcome):
-        try:
-            self.state.finish_tour(outcome)
-        except (OSError, ValueError) as exc:
-            self.state.tour_open = False
-            self._error(exc)
+        try: self.state.finish_tour(outcome)
+        except (OSError, ValueError) as exc: self.state.tour_open = False; self._error(exc)
         self.startupChanged.emit()
 
     @Slot()
     def advanceTutorial(self):
-        if not self.state.tour_open:
-            return
-        if self.state.tour_step >= self.tutorialStepCount - 1:
-            self._finish_tutorial('completed')
-        else:
-            self.state.tour_step += 1
-            self.startupChanged.emit()
+        if not self.state.tour_open: return
+        if getattr(self.state, 'tour_mode', 'tour') == 'scenarios': self.startFullTour(); return
+        if self.state.tour_step >= self.tutorialStepCount - 1: self._finish_tutorial('completed')
+        else: self.state.tour_step += 1; self.startupChanged.emit()
 
     @Slot()
     def previousTutorial(self):
-        if not self.state.tour_open:
-            return
-        if self.state.tour_step > 0:
-            self.state.tour_step -= 1
-            self.startupChanged.emit()
+        if not self.state.tour_open: return
+        if getattr(self.state, 'tour_mode', 'tour') == 'tour' and self.state.tour_step > 0: self.state.tour_step -= 1; self.startupChanged.emit()
 
     @Slot()
     def skipTutorial(self):
-        if self.state.tour_open:
-            self._finish_tutorial('skipped')
+        if self.state.tour_open: self._finish_tutorial('skipped')

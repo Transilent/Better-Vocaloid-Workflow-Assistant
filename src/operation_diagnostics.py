@@ -8,6 +8,7 @@ import math
 from pathlib import Path
 from queue import Empty, Full, Queue
 import re
+import sys
 from threading import Lock, Thread
 from time import monotonic
 from urllib.parse import urlsplit
@@ -42,12 +43,15 @@ _LABELS = {
     'mixdown-waveform': ('读取对齐波形', 'audio_mixdown'),
     'startup': ('程序启动', 'updates'),
     'qt': ('界面运行', 'updates'),
+    'project-convert': ('工程互转', 'project_convert'),
+    'project-inspect': ('工程分析', 'project_convert'),
 }
 _PREFIXES = {
     'preparation-': ('准备工作流', 'processing'),
     'tuning-': ('调音工作流', 'tuning'),
     'mixdown-': ('简易混音', 'audio_mixdown'),
     'chorus-': ('修音工作台', 'chorus'),
+    'convert-': ('工程互转', 'project_convert'),
     'video-': ('合成视频', 'video_mixdown'),
     'publication-': ('发布准备', 'publishing'),
     'calibration-': ('声库拟合', 'tuning_workshop'),
@@ -97,7 +101,7 @@ _HOSTS = ('huggingface.co', 'hf.co', 'hf-mirror.com', 'modelscope.cn',
 _PUBLIC_FILE = re.compile(
     r'(?:bs_roformer_karaoke_frazer_becruily\.ckpt|config\.yaml|'
     r'qwen3_asr_(?:encoder_(?:back|front)end\.fp16\.onnx|llm\.f16\.gguf)|'
-    r'VWA-(?:App-Update|Runtime-Upgrade)(?:-v[0-9.]+)?\.zip|'
+    r'VWA-(?:App-Update|Program-Update|Runtime-Upgrade|Runtime-Patch)(?:-v[0-9.]+)?\.zip|'
     r'(?:pymss(?:_core)?|av|filelock|networkx|jinja2|markupsafe|fsspec|sympy|torch|pyworld|pedalboard)'
     r'-[0-9][a-zA-Z0-9_.+\-]{1,96}\.whl)\Z')
 _TOKEN = re.compile(r'[a-z][a-z0-9-]{0,47}\Z')
@@ -572,3 +576,133 @@ def clock_text(seconds):
     hours, seconds = divmod(seconds, 3600)
     minutes, seconds = divmod(seconds, 60)
     return f'{hours:d}:{minutes:02d}:{seconds:02d}' if hours else f'{minutes:02d}:{seconds:02d}'
+
+
+_USER_PATH_RE = re.compile(r'(?i)[A-Z]:\\Users\\[^\\/\r\n]+')
+
+
+def _win_short_path(path_str: str) -> str:
+    if sys.platform != 'win32' or not path_str:
+        return ''
+    try:
+        import ctypes
+        buf = ctypes.create_unicode_buffer(4096)
+        n = ctypes.windll.kernel32.GetShortPathNameW(path_str, buf, len(buf))
+        return buf.value if 0 < n < len(buf) else ''
+    except (OSError, AttributeError, ValueError):
+        return ''
+
+
+def redact_diagnostic_text(text: str, root=ROOT, extra_roots=()) -> str:
+    """Strip local usernames and installation paths from diagnostic log excerpts."""
+    out = str(text or '')
+    p = Path(root)
+    resolved_p = p.resolve()
+    resolved = str(resolved_p)
+    short_full = _win_short_path(resolved)
+    short_parent = _win_short_path(str(resolved_p.parent))
+    mixed_short = str(Path(short_parent) / resolved_p.name) if short_parent else ''
+    candidates = []
+    for raw_root in (str(p), resolved, short_full, mixed_short, *(str(r) for r in extra_roots if r)):
+        if raw_root:
+            candidates.append(raw_root)
+            candidates.append(raw_root.replace('\\', '/'))
+    flags = re.IGNORECASE if sys.platform == 'win32' else 0
+    for prefix in sorted(set(candidates), key=len, reverse=True):
+        out = re.sub(re.escape(prefix), '<VWA_ROOT>', out, flags=flags)
+    out = _USER_PATH_RE.sub(r'<USER_HOME>', out)
+    return out
+
+
+def export_diagnostic_bundle(target_zip, summary_text: str, *, root=ROOT, dependency_check=None) -> dict:
+    """Write a strictly redacted diagnostic ZIP bundle without user media, lyrics or tokens."""
+    import zipfile
+
+    raw_root = str(root)
+    root = Path(root).resolve()
+    target = Path(target_zip).expanduser().resolve()
+    if target.suffix.lower() != '.zip':
+        target = target.with_suffix('.zip')
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    included = []
+    with zipfile.ZipFile(target, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        zf.writestr('summary.txt', redact_diagnostic_text(summary_text, root, extra_roots=(raw_root,)).encode('utf-8'))
+        included.append('summary.txt')
+
+        ops_log = root / LOG_DIR / LOG_NAME
+        if ops_log.is_file() and not ops_log.is_symlink():
+            raw = ops_log.read_bytes()[-LOG_LIMIT:]
+            zf.writestr('operations.jsonl', raw)
+            included.append('operations.jsonl')
+
+        launcher_log = root / 'launcher.log'
+        if launcher_log.is_file() and not launcher_log.is_symlink():
+            raw = launcher_log.read_bytes()[-65536:].decode('utf-8', errors='replace')
+            zf.writestr('launcher-tail.txt', redact_diagnostic_text(raw, root, extra_roots=(raw_root,)).encode('utf-8'))
+            included.append('launcher-tail.txt')
+
+        update_state = {}
+        for name in ('last-result.json', 'pending-rejected.json'):
+            p = root / 'cache/updates' / name
+            if p.is_file() and not p.is_symlink() and p.stat().st_size <= 64 * 1024:
+                try:
+                    data = json.loads(p.read_text(encoding='utf-8-sig'))
+                    if isinstance(data, dict):
+                        update_state[name] = {
+                            k: redact_diagnostic_text(str(v), root) if isinstance(v, str) else v
+                            for k, v in data.items()
+                            if k in ('state', 'version', 'installed_version', 'reason', 'error',
+                                     'files', 'removed', 'runtime_patched', 'acknowledged')
+                        }
+                except (OSError, ValueError):
+                    pass
+        zf.writestr('update-state.json', json.dumps(update_state, ensure_ascii=False, indent=2).encode('utf-8'))
+        included.append('update-state.json')
+
+        dep_report = {'state': 'not_provided'}
+        if callable(dependency_check):
+            try:
+                res = dependency_check(full=False)
+                dep_report = {
+                    'state': res.get('state'),
+                    'checked_files': res.get('checked_files'),
+                    'qt6_ready': res.get('qt6_ready'),
+                    'native_audio': res.get('native_audio'),
+                    'error_count': len(res.get('errors') or ()),
+                    'errors_sample': [
+                        {'component': e.get('component'), 'file': e.get('file'), 'reason': e.get('reason')}
+                        for e in (res.get('errors') or ())[:20]
+                    ],
+                }
+            except Exception as exc:
+                dep_report = {'state': 'error', 'reason': type(exc).__name__}
+        zf.writestr('dependency-quick-check.json', json.dumps(dep_report, ensure_ascii=False, indent=2).encode('utf-8'))
+        included.append('dependency-quick-check.json')
+
+        try:
+            from vwa_config import unified_config_snapshot
+            cfg_snap = unified_config_snapshot(root)
+            zf.writestr('config-snapshot.json', json.dumps(cfg_snap, ensure_ascii=False, indent=2).encode('utf-8'))
+            included.append('config-snapshot.json')
+        except (OSError, ValueError, TypeError, ImportError):
+            pass
+
+        try:
+            from crash_dump import recent_crash_artifacts
+            crashes = recent_crash_artifacts(root)
+            if crashes.get('has_traceback'):
+                zf.writestr(
+                    'crash-traceback.txt',
+                    redact_diagnostic_text(crashes['traceback_tail'], root).encode('utf-8'),
+                )
+                included.append('crash-traceback.txt')
+            zf.writestr(
+                'crash-dumps.json',
+                json.dumps({'dumps': crashes.get('dumps', [])}, ensure_ascii=False, indent=2).encode('utf-8'),
+            )
+            included.append('crash-dumps.json')
+        except (OSError, ValueError, TypeError, ImportError):
+            pass
+
+    return {'path': str(target), 'files': included, 'bytes': target.stat().st_size}

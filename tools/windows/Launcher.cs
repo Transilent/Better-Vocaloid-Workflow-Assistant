@@ -77,9 +77,10 @@ internal static class Launcher
             using (var process = Process.Start(start))
             {
                 process.WaitForExit();
-                if (process.ExitCode != 0 && !diagnostic)
+                // Exit code 2 means another instance is already running and has been activated via local IPC.
+                if (process.ExitCode != 0 && process.ExitCode != 2 && !diagnostic)
                     MessageBox.Show("助手未能正常启动或已异常退出。请查看 launcher.log，或运行 tools\\Start-Diagnostics.bat。\n\nSee launcher.log for details.", "术力口工作流助手", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return process.ExitCode;
+                return process.ExitCode == 2 ? 0 : process.ExitCode;
             }
         }
         catch (Exception error)

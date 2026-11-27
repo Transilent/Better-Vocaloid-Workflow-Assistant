@@ -2,10 +2,9 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-Dialog {
+UiDialog {
     id: dialog
     objectName: "tuningLyricBatchDialog"
-    required property QtObject theme
     required property QtObject controller
     required property string sourceKey
     signal noteRequested(var note)

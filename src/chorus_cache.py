@@ -5,15 +5,20 @@ from collections import OrderedDict
 from hashlib import sha256
 import os
 from pathlib import Path
+import struct
 from tempfile import NamedTemporaryFile
 import threading
+import zlib
 
 import numpy as np
 
 
 _MAX_MEMORY_SPANS = 64
 _MAX_DISK_SPAN_BYTES = 128 * 1024 * 1024
+_MAX_DISK_RMVPE_BYTES = 256 * 1024 * 1024
 _PRUNE_EVERY_WRITES = 32
+_ZSPAN_MAGIC = b'VWAC'
+_ZSPAN_HEADER = struct.Struct('<4sII')
 _LOCK = threading.Lock()
 _MEMORY_SPANS: OrderedDict[str, np.ndarray] = OrderedDict()
 _DISK_WRITES = 0
@@ -27,7 +32,9 @@ def _cache_root() -> Path | None:
         return None
     from common import ROOT
 
-    return (ROOT / 'cache/chorus-cas').resolve()
+    # Guard against leaking cache files into src/ when imported directly from the source tree.
+    base = ROOT.parent if ROOT.name == 'src' else ROOT
+    return (base / 'cache/chorus-cas').resolve()
 
 
 def _file_stamp_hash(path: Path) -> str:
@@ -73,9 +80,29 @@ def save_rmvpe_curve(track_sha: str, model_path: Path, midi: np.ndarray, step: f
             tmp = Path(handle.name)
         np.savez(tmp, midi=np.asarray(midi), step=np.float64(step))
         os.replace(tmp, target)
+        _prune_disk_rmvpe(folder)
     except OSError:
         if tmp is not None:
             tmp.unlink(missing_ok=True)
+
+
+def _prune_disk_rmvpe(folder: Path):
+    try:
+        files = [(f.stat().st_mtime_ns, f.stat().st_size, f) for f in folder.glob('*.npz')]
+    except OSError:
+        return
+    total = sum(sz for _, sz, _ in files)
+    if total <= _MAX_DISK_RMVPE_BYTES:
+        return
+    files.sort(key=lambda item: item[0])
+    for _, sz, path in files:
+        if total <= _MAX_DISK_RMVPE_BYTES:
+            break
+        try:
+            path.unlink(missing_ok=True)
+            total -= sz
+        except OSError:
+            pass
 
 
 def span_cache_key(dry: np.ndarray, rate: int, shift: np.ndarray, engine: str) -> str:
@@ -95,28 +122,43 @@ def load_pitch_span(key: str, expected_shape: tuple[int, int]):
         if cached is not None and cached.shape == expected_shape:
             _MEMORY_SPANS.move_to_end(key)
             return cached.copy()
-    target = root / 'spans' / f'{key}.npy'
-    if not target.is_file():
+    ztarget = root / 'spans' / f'{key}.zspan'
+    legacy = root / 'spans' / f'{key}.npy'
+    arr = None
+    if ztarget.is_file():
+        try:
+            raw = ztarget.read_bytes()
+            if len(raw) >= _ZSPAN_HEADER.size:
+                magic, rows, cols = _ZSPAN_HEADER.unpack_from(raw, 0)
+                if magic == _ZSPAN_MAGIC and (rows, cols) == expected_shape:
+                    payload = zlib.decompress(raw[_ZSPAN_HEADER.size:])
+                    expected_bytes = rows * cols * 4
+                    if len(payload) == expected_bytes:
+                        arr = np.frombuffer(payload, dtype='<f4').reshape(expected_shape).copy()
+        except (OSError, ValueError, zlib.error):
+            arr = None
+    elif legacy.is_file():
+        try:
+            loaded = np.load(legacy, allow_pickle=False)
+            if loaded.dtype == np.float32 and loaded.shape == expected_shape:
+                arr = loaded
+        except (OSError, ValueError):
+            arr = None
+    if arr is None or not np.isfinite(arr).all():
         return None
-    try:
-        arr = np.load(target, allow_pickle=False)
-        if arr.dtype != np.float32 or arr.shape != expected_shape or not np.isfinite(arr).all():
-            return None
-        with _LOCK:
-            _MEMORY_SPANS[key] = arr
-            _MEMORY_SPANS.move_to_end(key)
-            while len(_MEMORY_SPANS) > _MAX_MEMORY_SPANS:
-                _MEMORY_SPANS.popitem(last=False)
-        return arr.copy()
-    except (OSError, ValueError):
-        return None
+    with _LOCK:
+        _MEMORY_SPANS[key] = arr
+        _MEMORY_SPANS.move_to_end(key)
+        while len(_MEMORY_SPANS) > _MAX_MEMORY_SPANS:
+            _MEMORY_SPANS.popitem(last=False)
+    return arr.copy()
 
 
 def save_pitch_span(key: str, audio: np.ndarray):
     root = _cache_root()
     if root is None:
         return
-    arr = np.ascontiguousarray(audio, dtype=np.float32)
+    arr = np.ascontiguousarray(audio, dtype='<f4')
     with _LOCK:
         _MEMORY_SPANS[key] = arr.copy()
         _MEMORY_SPANS.move_to_end(key)
@@ -124,14 +166,17 @@ def save_pitch_span(key: str, audio: np.ndarray):
             _MEMORY_SPANS.popitem(last=False)
     folder = root / 'spans'
     folder.mkdir(parents=True, exist_ok=True)
-    target = folder / f'{key}.npy'
+    target = folder / f'{key}.zspan'
     if target.is_file():
         return
     tmp = None
     try:
-        with NamedTemporaryFile(dir=folder, prefix='.span-', suffix='.npy', delete=False) as handle:
+        header = _ZSPAN_HEADER.pack(_ZSPAN_MAGIC, int(arr.shape[0]), int(arr.shape[1]))
+        compressed = zlib.compress(arr.tobytes(), level=1)
+        with NamedTemporaryFile(dir=folder, prefix='.span-', suffix='.zspan', delete=False) as handle:
             tmp = Path(handle.name)
-        np.save(tmp, arr, allow_pickle=False)
+            handle.write(header)
+            handle.write(compressed)
         os.replace(tmp, target)
         global _DISK_WRITES
         with _LOCK:
@@ -146,7 +191,11 @@ def save_pitch_span(key: str, audio: np.ndarray):
 
 def _prune_disk_spans(folder: Path):
     try:
-        files = [(f.stat().st_mtime_ns, f.stat().st_size, f) for f in folder.glob('*.npy')]
+        files = [
+            (f.stat().st_mtime_ns, f.stat().st_size, f)
+            for pattern in ('*.zspan', '*.npy')
+            for f in folder.glob(pattern)
+        ]
     except OSError:
         return
     total = sum(sz for _, sz, _ in files)

@@ -68,7 +68,7 @@ def load():
 def install(progress=lambda *args: None, check=None, source='auto', root=COMPONENT):
     from optional_components import (download, extract_wheel, remove_owned_tree, cancelled,
                                      recover_verified_previous, replace_verified_tree)
-    from pipeline import job_lock
+    from process_control import job_lock
     if sys.version_info[:2] != (3, 12) or sys.platform != 'win32' or sys.maxsize < 2**32:
         raise RuntimeError('WORLD 组件需要助手自带的 Windows x64 Python 3.12。')
     root = Path(root).resolve()

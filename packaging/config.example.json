@@ -1,4 +1,5 @@
 {
+  "schema_version": 2,
   "python": "dependencies/vocal2midi/python/python.exe",
   "vocal2midi": "dependencies/vocal2midi",
   "ffmpeg": "dependencies/ffmpeg/ffmpeg.exe",
@@ -14,6 +15,7 @@
   "mdx_denoise": true,
   "publish_browser_executable": "dependencies/browser/chrome/chrome.exe",
   "download_source": "auto",
+  "network_proxy_mode": "direct",
   "check_for_updates": true,
   "auto_restart_updates": true,
   "theme": "dark",

@@ -146,7 +146,7 @@ def create_job(source="", lyrics="", language="zh", recognize_lyrics=True, paren
         raise ValueError("请选择本地音乐文件。")
     local = app_path(local_music) if local_music is not None else None
     if source_provenance is not None:
-        from agent_preparation import normalize_source_url
+        from source_contract import normalize_source_url
         if (local is None or not isinstance(source_provenance, dict)
                 or set(source_provenance) != {'kind', 'url'}
                 or source_provenance.get('kind') != 'caller_supplied_unverified'
@@ -341,110 +341,11 @@ def _reuse_download_locked(previous, **options):
 
 
 def get_view(bv, tools=None):
-    from bilibili_session import task_options, download_cookies, cookie_header
-    settings = task_options(tools)
-    url = "https://api.bilibili.com/x/web-interface/view?" + urllib.parse.urlencode({"bvid": bv})
-    headers = dict(HEADERS)
-    req = urllib.request.Request(url, headers=headers)
-    if cookie := cookie_header(download_cookies(settings), url):
-        req.add_unredirected_header('Cookie', cookie)
-    for attempt in range(settings['retries'] + 1):
-        try:
-            with direct_urlopen(req, timeout=settings['timeout']) as response:
-                data = json.load(response)
-            break
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
-            if (attempt == settings['retries'] or
-                    isinstance(error, urllib.error.HTTPError) and error.code not in (429, 500, 502, 503, 504)):
-                raise
-            time.sleep(min(4, .5 * 2 ** attempt))
-    if data.get("code") != 0:
-        raise RuntimeError(f"读取 B站简介失败：{data.get('message', data.get('code'))}")
-    return data["data"]
+    from bilibili_session import fetch_view
+    return fetch_view(bv, tools, headers=HEADERS, urlopen=direct_urlopen, sleeper=time.sleep)
 
 
-def run_process(argv, job, label, cooperative=False, *, on_progress_line=None):
-    env = os.environ.copy()
-    env.update(PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1", PYTHONNOUSERSITE="1")
-    temp = Path(job) / "temp"
-    temp.mkdir(exist_ok=True)
-    env.update(TMP=str(temp), TEMP=str(temp))
-    cache = ROOT / "cache/numba"
-    cache.mkdir(parents=True, exist_ok=True)
-    env["NUMBA_CACHE_DIR"] = native_path(cache)
-    output = Path(job) / f"{label}.log"
-    # A Windows job contains child processes, including ASR workers. Closing
-    # it on cancellation prevents an inference process surviving the job.
-    handle = None
-    try:
-        import win32job
-        handle = win32job.CreateJobObject(None, "VocalFlow-" + uuid.uuid4().hex)
-        limits = win32job.QueryInformationJobObject(handle, win32job.JobObjectExtendedLimitInformation)
-        limits["BasicLimitInformation"]["LimitFlags"] = win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-        win32job.SetInformationJobObject(handle, win32job.JobObjectExtendedLimitInformation, limits)
-    except ImportError:
-        pass
-    process = None
-    try:
-        with output.open("wb") as writer, output.open("rb") as reader:
-            process = subprocess.Popen(argv, stdout=writer, stderr=subprocess.STDOUT, env=env,
-                                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            if handle is not None:
-                try:
-                    win32job.AssignProcessToJobObject(handle, process._handle)
-                except Exception:
-                    handle.Close()
-                    handle = None
-            pending = b""
-            active_voice = {'midi_lead': '主唱', 'midi_backing': '和声'}.get(label, '人声')
-            stop_started = None
-            while True:
-                more = reader.read(65536)
-                pending += more
-                if b"\n" in pending or b"\r" in pending:
-                    # tqdm updates use carriage returns instead of newlines.
-                    # Consume them while the recognizer is still running.
-                    lines = re.split(br"[\r\n]", pending)
-                    pending = lines.pop()
-                    for line in lines:
-                        text = line.decode("utf-8", errors="replace").strip()
-                        if text:
-                            if label.startswith('midi'):
-                                if text.startswith(('[VWA Voice] ', '[BVWA Voice] ')):
-                                    active_voice = {'lead': '主唱', 'backing': '和声'}.get(text.rsplit(' ', 1)[-1], '人声')
-                                from progress_state import from_log
-                                from_log(job, text, active_voice)
-                            if not (on_progress_line is not None and on_progress_line(text)):
-                                print(text, flush=True)
-                code = process.poll()
-                if code is not None:
-                    # Drain all complete progress records before the final fragment.
-                    if more:
-                        continue
-                    if pending:
-                        text = pending.decode("utf-8", errors="replace").strip()
-                        if text and not (on_progress_line is not None and on_progress_line(text)):
-                            print(text, flush=True)
-                    break
-                if cancellation_requested(job):
-                    stop_started = stop_started or time.monotonic()
-                    if not cooperative or time.monotonic() - stop_started > 30:
-                        if handle is not None:
-                            win32job.TerminateJobObject(handle, 1)
-                        else:
-                            terminate_tree(process)
-                        process.wait(timeout=10)
-                        cancelled(job)
-                time.sleep(0.2)
-            cancelled(job)
-            if code:
-                raise RuntimeError(f"{label} 失败（退出码 {code}）；详情见 {output.name}。")
-    finally:
-        if process is not None and process.poll() is None:
-            terminate_tree(process)
-            process.wait(timeout=10)
-        if handle is not None:
-            handle.Close()
+from process_control import job_lock, run_process
 
 
 def terminate_tree(process):
@@ -1087,36 +988,7 @@ def exports(job, request):
 STEPS = [("metadata", "抓取简介与来源", prepare_metadata), ("download", "下载原视频", download),
          ("audio", "提取原音频和封面", audio_and_cover), ("separation", "分离人声和伴奏", separate),
          ("midi", "生成 MIDI", midi), ('subtitles', '导出字幕', subtitles), ('exports','导出工程与音频',exports)]
-REQUIRED = {"metadata": ["source-info.json", "upstream-info.json", "发布简介草稿.txt"],
-            "download": ["video/source.mp4", "download-report.json"],
-            "audio": ["audio/source.wav", "cover.jpg", "audio-info.json"],
-            "separation": ["audio/vocals.wav", "audio/instrumental.wav", "separation-report.json"],
-            "midi": ["midi/vocals.mid", "midi/report.json"], 'subtitles': ['subtitles/report.json'], 'exports':['exports/report.json']}
-
-
-def requirements(key, request):
-    if key == 'subtitles':
-        return REQUIRED[key]
-    if request.get("source_kind") == "local":
-        if key == "download":
-            return [request["input_file"], "import-report.json"]
-        if key == "audio":
-            return ["audio/source.wav", "audio-info.json"]
-    if request.get("voice_mode", "single") != "single":
-        if key == "separation":
-            return REQUIRED[key] + ["audio/lead.wav", "audio/backing.wav"]
-        if key == "midi":
-            return ["midi/voices.mid", "midi/report.json", "midi/lead/lead.mid", "midi/backing/backing.mid", "midi/需要核对的音符.csv"]
-    return REQUIRED[key]
-
-
-@contextmanager
-def job_lock(job):
-    try:
-        with exclusive_sidecar(Path(job) / "run.lock"):
-            yield
-    except SidecarBusy:
-        raise RuntimeError("这个任务已经在运行，请等待它完成或在原窗口取消。") from None
+from task_contract import REQUIRED, requirements
 
 
 _TERMINAL_STATUS_STATES = frozenset({'done', 'partial', 'cancelled', 'failed', 'interrupted'})

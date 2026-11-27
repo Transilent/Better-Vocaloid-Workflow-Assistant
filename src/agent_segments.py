@@ -108,22 +108,18 @@ class _DraftSegment:
         return max(values)
 
 
+from agent_primitives import canonical_json_bytes
+
+
 def _canonical(value: Any) -> bytes:
-    try:
-        text = json.dumps(
-            value,
-            ensure_ascii=False,
-            allow_nan=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-    except (TypeError, ValueError, UnicodeError, RecursionError) as error:
-        raise SegmentError(
+    return canonical_json_bytes(
+        value,
+        error_factory=lambda error: SegmentError(
             "invalid_segment_data",
             "段指纹需要有限的 JSON 数据。",
             details={"reason": str(error)},
-        ) from error
-    return text.encode("utf-8")
+        ),
+    )
 
 
 def _sha256(value: bytes) -> str:

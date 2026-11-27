@@ -665,175 +665,25 @@ Item {
         syncPreciseSelection(true)
     }
 
-    component PanelLabel: Text {
-        id: label
-        required property QtObject theme
-        color: label.theme.text
-        font.pixelSize: Math.round(13 * label.theme.scale)
-        font.weight: Font.DemiBold
-        wrapMode: Text.Wrap
-        textFormat: Text.PlainText
-    }
 
-    component HelperText: Text {
-        id: helper
-        required property QtObject theme
-        color: helper.theme.muted
-        font.pixelSize: Math.round(12 * helper.theme.scale)
-        lineHeight: 1.18
-        wrapMode: Text.Wrap
-        textFormat: Text.PlainText
-    }
-
-    component Divider: Rectangle {
-        Layout.fillWidth: true
-        implicitHeight: 1
-        color: page.theme.line
-    }
-
-    component ThemedTextField: TextField {
-        id: input
-        required property QtObject theme
-
-        implicitHeight: Math.round(38 * input.theme.scale)
-        leftPadding: Math.round(11 * input.theme.scale)
-        rightPadding: leftPadding
-        topPadding: Math.round(8 * input.theme.scale)
-        bottomPadding: topPadding
-        color: input.theme.text
-        placeholderTextColor: input.theme.muted
-        font.pixelSize: Math.round(13 * input.theme.scale)
-        selectByMouse: true
-        focusPolicy: Qt.StrongFocus
-        selectionColor: input.theme.accent
-        selectedTextColor: input.theme.base
-        Accessible.name: placeholderText
-
-        background: Rectangle {
-            radius: Math.round(7 * input.theme.scale)
-            color: input.enabled ? input.theme.surface : input.theme.base
-            border.width: 1
-            border.color: input.activeFocus ? input.theme.accent : input.theme.line
-            opacity: input.enabled ? 1 : 0.58
-        }
-    }
-
-    component EditorButton: UiButton {
-        implicitHeight: Math.round(30 * theme.scale)
-        leftPadding: Math.round(7 * theme.scale)
-        rightPadding: leftPadding
-        topPadding: 0
-        bottomPadding: 0
-    }
-
-    component RecipeButton: EditorButton {
-        id: recipe
-        required property color tint
-        required property string fullLabel
-        Accessible.name: fullLabel
-        Accessible.checkable: true
-        Accessible.checked: selected
-        ToolTip.visible: hovered || visualFocus
-        ToolTip.text: fullLabel
-        background: Rectangle {
-            radius: Math.round(6 * recipe.theme.scale)
-            color: Qt.rgba(recipe.tint.r, recipe.tint.g, recipe.tint.b,
-                           recipe.selected ? 0.52 : recipe.hovered ? 0.30 : 0.17)
-            border.color: recipe.selected || recipe.visualFocus ? recipe.tint : recipe.theme.line
-            border.width: recipe.selected || recipe.visualFocus ? 2 : 1
-            Rectangle {
-                anchors.left: parent.left
-                anchors.leftMargin: 5
-                anchors.verticalCenter: parent.verticalCenter
-                width: 5; height: 5; radius: 2.5
-                color: recipe.tint
-            }
-        }
-    }
-
-    component StrengthRow: RowLayout {
-        id: strengthRow
-        required property string label
-        required property string sliderName
-        required property string field
-        required property real amount
-        property string valueName: ""
-        Layout.fillWidth: true
-        spacing: page.editorGap
-        HelperText {
-            theme: page.theme
-            Layout.minimumWidth: Math.round(46 * page.scale)
-            text: strengthRow.label
-        }
-        PercentSlider {
-            id: strengthControl
-            property string dragRegion: ""
-            objectName: strengthRow.sliderName
-            Layout.fillWidth: true
-            strength: strengthRow.amount
-            enabled: !page.busy && page.hasSource && strengthRow.enabled
-            Accessible.name: strengthRow.label
-            onMoved: {
-                if (!pressed)
-                    page.controller.setBrushValue(page.styleRegionId, strengthRow.field, value / 100)
-            }
-            onPressedChanged: {
-                if (pressed)
-                    dragRegion = page.styleRegionId
-                else if (dragRegion === page.styleRegionId && value !== percent)
-                    page.controller.setBrushValue(dragRegion, strengthRow.field, value / 100)
-            }
-        }
-        HelperText {
-            objectName: strengthRow.valueName
-            theme: page.theme
-            Layout.minimumWidth: Math.round(33 * page.scale)
-            horizontalAlignment: Text.AlignRight
-            text: page.strengthText(strengthControl.value / 100)
-        }
-    }
-
-    component PercentSlider: Slider {
-        id: slider
-        required property real strength
-        readonly property int percent: Math.round(Math.max(0, Math.min(1, strength)) * 100)
-
-        implicitHeight: Math.round(30 * page.scale)
-        from: 0
-        to: 100
-        value: percent
-        stepSize: 1
-        snapMode: Slider.SnapAlways
-        focusPolicy: Qt.StrongFocus
-        wheelEnabled: false
-        Accessible.description: page.vwaTr("范围 0% 到 100%，每次调整 1%")
-
-        background: Rectangle {
-            x: slider.leftPadding + slider.handle.width / 2
-            y: Math.round((slider.height - height) / 2)
-            width: Math.max(0, slider.availableWidth - slider.handle.width)
-            height: Math.round(4 * page.scale)
-            radius: height / 2
-            color: page.theme.line
-            Rectangle {
-                width: parent.width * slider.visualPosition
-                height: parent.height
-                radius: parent.radius
-                color: page.theme.accent
-            }
-        }
-        handle: Rectangle {
-            x: slider.leftPadding + slider.visualPosition * (slider.availableWidth - width)
-            y: Math.round((slider.height - height) / 2)
-            width: Math.round(15 * page.scale)
-            height: width
-            radius: width / 2
-            color: slider.visualFocus ? page.theme.accent : page.theme.text
-            border.width: slider.visualFocus ? 2 : 1
-            border.color: slider.visualFocus ? page.theme.text : page.theme.accent
-            opacity: slider.enabled ? 1 : 0.5
-        }
-    }
+    property alias timelineRoll: timelineRoll
+    property alias lyricBatchDialog: tuningDialogs.lyricBatchDialog
+    property alias issuesDialog: tuningDialogs.issuesDialog
+    property alias draftRecovery: tuningDialogs.draftRecovery
+    property alias draftFile: tuningDialogs.draftFile
+    property alias candidateSaveDialog: tuningDialogs.candidateSaveDialog
+    property alias clearRegionsDialog: tuningDialogs.clearRegionsDialog
+    property alias projectDialog: tuningDialogs.projectDialog
+    property alias sessionDialog: tuningDialogs.sessionDialog
+    property alias sessionLocationDialog: tuningDialogs.sessionLocationDialog
+    property alias taskPickerDialog: tuningDialogs.taskPickerDialog
+    property alias referenceDialog: tuningDialogs.referenceDialog
+    property alias calibrationDialog: tuningDialogs.calibrationDialog
+    property alias retainedDialog: tuningDialogs.retainedDialog
+    property alias presetImportDialog: tuningDialogs.presetImportDialog
+    property alias presetExportDialog: tuningDialogs.presetExportDialog
+    property alias presetNameDialog: tuningDialogs.presetNameDialog
+    property alias presetNameField: tuningDialogs.presetNameField
 
     ColumnLayout {
         anchors.fill: parent
@@ -857,12 +707,12 @@ Item {
                 anchors.fill: parent
                 anchors.margins: 6 * page.scale
                 spacing: page.editorGap
-                PanelLabel {
+                TuningControls.PanelLabel {
                     Layout.fillWidth: true
                     theme: page.theme
                     text: page.vwaTr("调音专注编辑 · 时间轴与参数栏")
                 }
-                EditorButton {
+                TuningControls.EditorButton {
                     objectName: "exitTuningEditorFocus"
                     theme: page.theme
                     text: page.vwaTr("退出专注 (Esc)")
@@ -931,7 +781,7 @@ Item {
                         anchors.fill: parent
                         anchors.margins: 2
                         spacing: 2
-                        EditorButton {
+                        TuningControls.EditorButton {
                             objectName: "tuningModeSingle"
                             theme: page.theme
                             implicitHeight: Math.round(26 * page.scale)
@@ -943,7 +793,7 @@ Item {
                             enabled: !page.busy
                             onClicked: page.controller.setMode("single")
                         }
-                        EditorButton {
+                        TuningControls.EditorButton {
                             objectName: "tuningModeMulti"
                             theme: page.theme
                             implicitHeight: Math.round(26 * page.scale)
@@ -957,7 +807,7 @@ Item {
                         }
                     }
                 }
-                EditorButton {
+                TuningControls.EditorButton {
                     objectName: "tuningOpenProject"
                     theme: page.theme
                     text: page.vwaTr("打开工程…")
@@ -965,15 +815,16 @@ Item {
                     enabled: !page.busy
                     onClicked: projectDialog.open()
                 }
-                EditorButton {
+                TuningControls.EditorButton {
                     id: workspaceMenuButton
                     objectName: "tuningWorkspaceMenu"
                     theme: page.theme
                     text: page.vwaTr("工程与恢复…")
                     enabled: !page.busy || !page.hasSource
                     onClicked: workspaceMenu.open()
-                    Menu {
+                    UiMenu {
                         id: workspaceMenu
+                        theme: page.theme
                         y: workspaceMenuButton.height
                         width: Math.round(222 * page.scale)
                         MenuItem {
@@ -1029,7 +880,7 @@ Item {
                         }
                     }
                 }
-                EditorButton {
+                TuningControls.EditorButton {
                     objectName: "tuningEditorFocus"
                     theme: page.theme
                     text: page.vwaTr("专注编辑")
@@ -1068,12 +919,12 @@ Item {
                 id: conflictRow
                 anchors.fill: parent
                 anchors.margins: 7 * page.scale
-                HelperText {
+                TuningControls.HelperText {
                     Layout.fillWidth: true
                     theme: page.theme
                     text: page.vwaTr("共享草稿有更新。本地编辑已存成副本，请核对后继续。")
                 }
-                EditorButton {
+                TuningControls.EditorButton {
                     objectName: "reviewDraftConflict"
                     theme: page.theme
                     text: page.vwaTr("核对草稿")
@@ -1107,15 +958,15 @@ Item {
                 ColumnLayout {
                     Layout.fillWidth: true
                     spacing: Math.round(3 * page.scale)
-                    PanelLabel {
+                    TuningControls.PanelLabel {
                         theme: page.theme
                         text: page.vwaTr("检测到旧版全局片段")
                     }
-                    HelperText {
+                    TuningControls.HelperText {
                         theme: page.theme
                         text: page.legacyText()
                     }
-                    HelperText {
+                    TuningControls.HelperText {
                         theme: page.theme
                         text: page.legacyMissingTrackHint()
                     }
@@ -1197,7 +1048,7 @@ Item {
 
                                     Repeater {
                                         model: page.tracks
-                                        delegate: EditorButton {
+                                        delegate: TuningControls.EditorButton {
                                             id: trackChip
                                             required property var modelData
                                             required property int index
@@ -1320,7 +1171,7 @@ Item {
                                 font.pixelSize: Math.round(10 * page.scale)
                                 textFormat: Text.PlainText
                             }
-                            EditorButton {
+                            TuningControls.EditorButton {
                                 objectName: "tuningPreviousLyricOccurrence"
                                 theme: page.theme
                                 text: page.vwaTr("上一处")
@@ -1328,7 +1179,7 @@ Item {
                                 enabled: !page.busy && boolOr(page.view.canPreviousLyricMatch, false)
                                 onClicked: page.controller.stepLyricMatch(-1)
                             }
-                            EditorButton {
+                            TuningControls.EditorButton {
                                 objectName: "tuningNextLyricOccurrence"
                                 theme: page.theme
                                 text: page.vwaTr("下一处")
@@ -1357,7 +1208,7 @@ Item {
                                     anchors.fill: parent
                                     anchors.margins: 2
                                     spacing: 2
-                                    EditorButton {
+                                    TuningControls.EditorButton {
                                         objectName: "tuningNoteTool"
                                         theme: page.theme
                                         implicitHeight: Math.round(26 * page.scale)
@@ -1379,7 +1230,7 @@ Item {
                                                 page.inspectorTab = "note"
                                         }
                                     }
-                                    EditorButton {
+                                    TuningControls.EditorButton {
                                         objectName: "tuningStyleTool"
                                         theme: page.theme
                                         implicitHeight: Math.round(26 * page.scale)
@@ -1400,7 +1251,7 @@ Item {
                                             page.inspectorTab = "style"
                                         }
                                     }
-                                    EditorButton {
+                                    TuningControls.EditorButton {
                                         objectName: "tuningPitchDrawTool"
                                         theme: page.theme
                                         implicitHeight: Math.round(26 * page.scale)
@@ -1419,7 +1270,7 @@ Item {
                                             ? page.controller.setNoteTool(true)
                                             : page.controller.setPitchTool(selected ? "style" : "draw")
                                     }
-                                    EditorButton {
+                                    TuningControls.EditorButton {
                                         objectName: "tuningPitchEraseTool"
                                         theme: page.theme
                                         implicitHeight: Math.round(26 * page.scale)
@@ -1441,7 +1292,7 @@ Item {
                             }
 
                             // 2. View & editing toggles
-                            EditorButton {
+                            TuningControls.EditorButton {
                                 objectName: "tuningParameterToggle"
                                 theme: page.theme
                                 glyph: "sliders"
@@ -1453,7 +1304,7 @@ Item {
                                 Accessible.checked: selected
                                 onClicked: page.controller.setParameterOpen(!page.view.parameterOpen)
                             }
-                            EditorButton {
+                            TuningControls.EditorButton {
                                 objectName: "tuningSnapToNotes"
                                 theme: page.theme
                                 text: page.vwaTr("吸附")
@@ -1468,7 +1319,7 @@ Item {
                                     : page.vwaTr("吸附到附近音符边界 · Alt 临时跳过")
                                 onClicked: page.controller.setSnapEnabled(!page.view.snapEnabled)
                             }
-                            EditorButton {
+                            TuningControls.EditorButton {
                                 objectName: "timelineFit"
                                 theme: page.theme
                                 readonly property bool returning: page.wholeTimelineVisible && page.canReturnToWord
@@ -1483,7 +1334,7 @@ Item {
                             }
 
                             // 3. Lyric search & QA tools on the right
-                            ThemedTextField {
+                            TuningControls.ThemedTextField {
                                 id: lyricSearch
                                 objectName: "tuningLyricSearch"
                                 implicitHeight: Math.round(30 * page.scale)
@@ -1503,7 +1354,7 @@ Item {
                                     timelineRoll.forceActiveFocus(Qt.OtherFocusReason)
                                 }
                             }
-                            EditorButton {
+                            TuningControls.EditorButton {
                                 objectName: "tuningClearLyricSearch"
                                 theme: page.theme
                                 text: page.vwaTr("清空")
@@ -1512,7 +1363,7 @@ Item {
                                 enabled: !page.busy
                                 onClicked: page.controller.setQuery("")
                             }
-                            EditorButton {
+                            TuningControls.EditorButton {
                                 objectName: "tuningLyricBatch"
                                 theme: page.theme
                                 quiet: !lyricBatchDialog.peeking
@@ -1523,7 +1374,7 @@ Item {
                                 ToolTip.text: page.vwaTr("整句贴词 · 先框选音符。按住 Shift 可只选区。")
                                 onClicked: lyricBatchDialog.open()
                             }
-                            EditorButton {
+                            TuningControls.EditorButton {
                                 objectName: "tuningEditingIssues"
                                 theme: page.theme
                                 quiet: true
@@ -1559,7 +1410,7 @@ Item {
                                 orientation: ListView.Horizontal
                                 spacing: Math.round(2 * page.scale)
                                 boundsBehavior: Flickable.StopAtBounds
-                                ScrollBar.horizontal: ScrollBar {}
+                                ScrollBar.horizontal: UiScrollBar { theme: page.theme }
                                 WheelHandler {
                                     target: null
                                     onWheel: function(event) {
@@ -1711,7 +1562,7 @@ Item {
                                     horizontalAlignment: Text.AlignHCenter
                                     textFormat: Text.PlainText
                                 }
-                                HelperText {
+                                TuningControls.HelperText {
                                     Layout.fillWidth: true
                                     theme: page.theme
                                     text: page.vwaTr("打开调音工程后，可在单轨卷帘逐句精修，或切到多轨泳道比较重复歌词。")
@@ -1720,7 +1571,7 @@ Item {
                                 RowLayout {
                                     Layout.alignment: Qt.AlignHCenter
                                     spacing: page.editorGap
-                                    EditorButton {
+                                    TuningControls.EditorButton {
                                         objectName: "emptyOpenTuningProject"
                                         theme: page.theme
                                         text: page.vwaTr("打开工程…")
@@ -1728,7 +1579,7 @@ Item {
                                         enabled: !page.busy
                                         onClicked: projectDialog.open()
                                     }
-                                    EditorButton {
+                                    TuningControls.EditorButton {
                                         objectName: "emptyOpenTuningTask"
                                         theme: page.theme
                                         text: page.vwaTr("从任务载入…")
@@ -1738,7 +1589,7 @@ Item {
                                             taskPickerDialog.open()
                                         }
                                     }
-                                    EditorButton {
+                                    TuningControls.EditorButton {
                                         objectName: "emptyResumeTuningSession"
                                         theme: page.theme
                                         text: page.vwaTr("继续会话…")
@@ -1845,7 +1696,7 @@ Item {
                                 onValueModified: page.commitPreciseSelection()
                                 Accessible.name: page.vwaTr("选区结束时间，秒")
                             }
-                            EditorButton {
+                            TuningControls.EditorButton {
                                 objectName: "applyTuningSelection"
                                 theme: page.theme
                                 text: page.vwaTr("应用时间")
@@ -1883,7 +1734,7 @@ Item {
                             model: [{key:"style", label:page.vwaTr("风格")}, {key:"note", label:page.vwaTr("音符")},
                                     {key:"source", label:page.vwaTr("来源")},
                                     {key:"presets", label:page.vwaTr("预设")}, {key:"result", label:page.vwaTr("结果")}]
-                            EditorButton {
+                            TuningControls.EditorButton {
                                 required property var modelData
                                 objectName: "tuningInspector_" + modelData.key
                                 Layout.fillWidth: true
@@ -1896,8 +1747,8 @@ Item {
                             }
                         }
                     }
-                    Divider {}
-                    HelperText {
+                    TuningControls.Divider {}
+                    TuningControls.HelperText {
                         objectName: "tuningFormatReadOnly"
                         Layout.fillWidth: true
                         theme: page.theme
@@ -1924,1164 +1775,11 @@ Item {
                         ColumnLayout {
                             width: inspectorScroll.availableWidth
                             spacing: page.editorGap
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                visible: page.inspectorTab === "note"
-                                spacing: page.editorGap
-                                PanelLabel {
-                                    theme: page.theme
-                                    text: page.vwaTr("音符参数")
-                                }
-                                HelperText {
-                                    Layout.fillWidth: true
-                                    theme: page.theme
-                                    text: page.selectedNoteCount > 1
-                                        ? page.vwaTr("已选 {count} 个音符").replace("{count}", page.selectedNoteCount)
-                                        : page.currentNote.id ? page.textOf(page.currentNote.lyric)
-                                            : page.vwaTr("单击卷帘中的音符以调整参数。")
-                                }
-                                HelperText {
-                                    Layout.fillWidth: true
-                                    theme: page.theme
-                                    visible: page.selectedNoteCount > 1 && !!page.view.noteTool
-                                    text: page.vwaTr("拖动所选音符可一起移动。上下键升降半音，Ctrl 加上下键升降八度。")
-                                }
-                                Repeater {
-                                    model: [{key:"pitch", label:page.vwaTr("音高")},
-                                            {key:"start", label:page.vwaTr("开始")},
-                                            {key:"end", label:page.vwaTr("结束")}]
-                                    RowLayout {
-                                        required property var modelData
-                                        readonly property bool pitchField: modelData.key === "pitch"
-                                        readonly property string reason: page.textOf(page.view.scoreEditReason
-                                            || (pitchField ? page.currentNote.pitchReason : page.currentNote.timingReason))
-                                        Layout.fillWidth: true
-                                        visible: page.selectedNoteCount === 1
-                                        HelperText {
-                                            theme: page.theme
-                                            Layout.minimumWidth: Math.round(38 * page.scale)
-                                            text: modelData.label
-                                        }
-                                        UiNumberField {
-                                            objectName: "tuningNoteField_" + modelData.key
-                                            Layout.fillWidth: true
-                                            theme: page.theme
-                                            fieldLabel: modelData.label
-                                            unit: pitchField ? "MIDI" : "s"
-                                            currentValue: page.numberOr(page.currentNote[modelData.key], 0)
-                                            minimum: pitchField ? 0 : Math.floor(1000 * page.numberOr(
-                                                modelData.key === "start" ? page.currentNote.timeMin : page.currentNote.start, 0)) / 1000
-                                            maximum: pitchField ? 127 : Math.ceil(1000 * page.numberOr(page.currentNote.timeMax, 0)) / 1000
-                                            decimals: pitchField ? 0 : 3
-                                            arrowStep: pitchField ? 1 : .01
-                                            scopeKey: page.noteScopeVersion
-                                            enabled: !page.busy && !!page.view.noteTool && !reason
-                                            onCommitted: (scope, value) => page.editNoteField(modelData.key, value)
-                                        }
-                                        HelperText {
-                                            theme: page.theme
-                                            visible: !!reason
-                                            text: "ⓘ"
-                                            Accessible.name: reason
-                                            ToolTip.visible: lockReasonHover.hovered
-                                            ToolTip.text: reason
-                                            HoverHandler { id: lockReasonHover }
-                                        }
-                                    }
-                                }
-                                HelperText {
-                                    objectName: "tuningNotePronunciation"
-                                    Layout.fillWidth: true
-                                    theme: page.theme
-                                    visible: page.selectedNoteCount === 1 && !!page.currentNote.pronunciation
-                                    text: page.vwaTr("发音") + "  " + page.textOf(page.currentNote.pronunciation)
-                                    textFormat: Text.PlainText
-                                }
-                                PanelLabel {
-                                    Layout.fillWidth: true
-                                    theme: page.theme
-                                    visible: nativeNoteFields.visible
-                                    text: page.vwaTr("原生参数")
-                                }
-                                GridLayout {
-                                    id: nativeNoteFields
-                                    Layout.fillWidth: true
-                                    visible: page.selectedNoteCount === 1 && page.noteDetails.length > 0
-                                    columns: 2
-                                    columnSpacing: page.editorGap
-                                    rowSpacing: page.editorGap
-                                    Repeater {
-                                        model: nativeNoteFields.visible ? page.noteDetails.length : 0
-                                        ColumnLayout {
-                                            id: detailColumn
-                                            required property int index
-                                            readonly property var detail: page.noteDetails[index] || ({})
-                                            readonly property string title: page.vwaTr(page.textOf(detail.label))
-                                            Layout.fillWidth: true
-                                            Layout.preferredWidth: 1
-                                            spacing: Math.round(3 * page.scale)
-                                            HelperText {
-                                                Layout.fillWidth: true
-                                                theme: page.theme
-                                                text: detailColumn.title
-                                            }
-                                            UiNumberField {
-                                                objectName: "tuningNoteDetail_" + page.textOf(detail.key)
-                                                Layout.fillWidth: true
-                                                Layout.minimumWidth: 0
-                                                theme: page.theme
-                                                fieldLabel: detailColumn.title
-                                                unit: page.textOf(detail.unit)
-                                                currentValue: page.numberOr(detail.value, 0)
-                                                minimum: page.numberOr(detail.minimum, 0)
-                                                maximum: page.numberOr(detail.maximum, 0)
-                                                decimals: page.numberOr(detail.decimals, 0)
-                                                arrowStep: 1
-                                                scopeKey: page.noteScopeVersion
-                                                enabled: !page.busy && !!page.view.noteTool && !page.view.scoreEditReason
-                                                onCommitted: (scope, value) => {
-                                                    if (scope === page.noteScopeVersion && page.selectedNoteCount === 1)
-                                                        page.controller.editNoteDetail(page.currentNote.id, detail.key, value)
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                HelperText {
-                                    Layout.fillWidth: true
-                                    theme: page.theme
-                                    visible: !!page.view.scoreEditReason || (!!page.currentNote.id && !page.view.noteTool)
-                                    text: page.textOf(page.view.scoreEditReason) || page.vwaTr("切到「改音符」后可调整参数。")
-                                }
-                            }
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                visible: page.inspectorTab === "style"
-                                enabled: !page.view.formatReadOnly
-                                spacing: page.editorGap
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    PanelLabel {
-                                        Layout.fillWidth: true
-                                        theme: page.theme
-                                        text: page.styleRegion ? page.vwaTr("当前片段") : page.vwaTr("新片段")
-                                    }
-                                    EditorButton {
-                                        objectName: "tuningNewRegionBrush"
-                                        theme: page.theme
-                                        visible: !!page.styleRegion
-                                        text: page.vwaTr("新片段")
-                                        quiet: true
-                                        enabled: !page.busy
-                                        onClicked: page.controller.selectSpan(Number(page.view.start), Number(page.view.end))
-                                    }
-                                }
-                                HelperText {
-                                    objectName: "tuningStyleRegionScope"
-                                    Layout.fillWidth: true
-                                    theme: page.theme
-                                    visible: !!page.styleRegion
-                                    text: page.styleRegion ? page.styleRegion.trackName
-                                        + " · " + Number(page.styleRegion.start).toFixed(2)
-                                        + "–" + Number(page.styleRegion.end).toFixed(2) + " s" : ""
-                                }
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    PanelLabel { Layout.fillWidth: true; theme: page.theme; text: page.vwaTr("风格") }
-                                    EditorButton {
-                                        objectName: "tuningStylePitch"
-                                        theme: page.theme
-                                        text: page.vwaTr("附加音高")
-                                        quiet: true
-                                        selected: !!page.styleBrush.pitch
-                                        enabled: !page.busy && page.hasSource
-                                            && (!page.styleBrush.recipeName || !!page.styleBrush.recipeHasPitch)
-                                        onClicked: page.controller.setBrushValue(page.styleRegionId, "pitch", !selected)
-                                    }
-                                }
-                                HelperText {
-                                    objectName: "tuningExternalStyleName"
-                                    Layout.fillWidth: true
-                                    theme: page.theme
-                                    visible: !!page.styleBrush.recipeName
-                                    text: page.vwaTr("外部风格 · ") + page.textOf(page.styleBrush.recipeName)
-                                }
-                                GridLayout {
-                                    Layout.fillWidth: true
-                                    columns: 2
-                                    uniformCellWidths: true
-                                    columnSpacing: page.editorGap
-                                    rowSpacing: page.editorGap
-                                    Repeater {
-                                        model: page.styles
-                                        RecipeButton {
-                                            required property var modelData
-                                            objectName: "tuningStyle_" + String(modelData.id)
-                                            Layout.fillWidth: true
-                                            theme: page.theme
-                                            text: String(modelData.short || modelData.label)
-                                            fullLabel: String(modelData.label)
-                                            tint: modelData.color || page.theme.muted
-                                            selected: !page.styleBrush.recipeName && String(page.styleBrush.preset) === String(modelData.id)
-                                            enabled: !page.busy && page.hasSource
-                                            onClicked: page.controller.setBrushValue(page.styleRegionId, "preset", String(modelData.id))
-                                        }
-                                    }
-                                }
-                                StrengthRow {
-                                    label: page.vwaTr("风格强度")
-                                    sliderName: "tuningStyleStrengthSlider"
-                                    valueName: "tuningStyleStrengthPercent"
-                                    field: "strength"
-                                    amount: page.numberOr(page.styleBrush.strength, 0)
-                                }
-                                EditorButton {
-                                    objectName: "tuningStyleDetailToggle"
-                                    theme: page.theme
-                                    text: page.vwaTr("风格细节")
-                                    quiet: true
-                                    disclosure: page.showStyleDetails ? 1 : 0
-                                    selected: page.showStyleDetails
-                                    onClicked: page.showStyleDetails = !page.showStyleDetails
-                                }
-                                ColumnLayout {
-                                    visible: page.showStyleDetails
-                                    Layout.fillWidth: true
-                                    spacing: 0
-                                    Repeater {
-                                        model: [{key:"onset", label:page.vwaTr("起音")}, {key:"sustain", label:page.vwaTr("持续")},
-                                                {key:"connection", label:page.vwaTr("衔接")}, {key:"release", label:page.vwaTr("收尾")}]
-                                        StrengthRow {
-                                            required property var modelData
-                                            visible: modelData.key !== "connection" || !page.styleBrush.recipeName
-                                            label: modelData.label
-                                            sliderName: "tuningStyleDetail_" + modelData.key
-                                            field: modelData.key
-                                            amount: page.numberOr((page.styleBrush.detail || {})[modelData.key], 1)
-                                        }
-                                    }
-                                }
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    PanelLabel { Layout.fillWidth: true; theme: page.theme; text: page.vwaTr("唱腔") }
-                                    EditorButton {
-                                        objectName: "tuningTechniquePitch"
-                                        theme: page.theme
-                                        text: page.vwaTr("倚滑与收腔")
-                                        quiet: true
-                                        selected: !!page.styleBrush.technique_pitch
-                                        enabled: !page.busy && page.hasSource && page.styleBrush.technique !== "none"
-                                        onClicked: page.controller.setBrushValue(page.styleRegionId, "technique_pitch", !selected)
-                                    }
-                                }
-                                GridLayout {
-                                    Layout.fillWidth: true
-                                    columns: 2
-                                    uniformCellWidths: true
-                                    columnSpacing: page.editorGap
-                                    rowSpacing: page.editorGap
-                                    Repeater {
-                                        model: page.techniques
-                                        RecipeButton {
-                                            required property var modelData
-                                            objectName: "tuningTechnique_" + String(modelData.id)
-                                            Layout.fillWidth: true
-                                            theme: page.theme
-                                            text: String(modelData.short || modelData.label)
-                                            fullLabel: String(modelData.label)
-                                            tint: modelData.color || page.theme.muted
-                                            selected: String(page.styleBrush.technique) === String(modelData.id)
-                                            enabled: !page.busy && page.hasSource
-                                            onClicked: page.controller.setBrushValue(page.styleRegionId, "technique", String(modelData.id))
-                                        }
-                                    }
-                                }
-                                StrengthRow {
-                                    label: page.vwaTr("唱腔强度")
-                                    sliderName: "tuningTechniqueStrengthSlider"
-                                    field: "technique_strength"
-                                    amount: page.numberOr(page.styleBrush.technique_strength, 0)
-                                    enabled: page.styleBrush.technique !== "none"
-                                }
-                                Divider {}
-                                EditorButton {
-                                    objectName: "addTuningRegion"
-                                    Layout.fillWidth: true
-                                    theme: page.theme
-                                    text: page.vwaTr("应用到时间选区")
-                                    primary: true
-                                    visible: !page.styleRegion
-                                    enabled: page.canAddRegion
-                                    onClicked: page.controller.addRegion()
-                                }
-                                CheckBox {
-                                    objectName: "tuningAutoApplySelection"
-                                    text: page.vwaTr("框选即应用")
-                                    font.pixelSize: Math.round(12 * page.scale)
-                                    checked: !!page.view.autoApplySelection
-                                    onClicked: page.controller.setAutoApplySelection(checked)
-                                    ToolTip.visible: hovered || visualFocus
-                                    ToolTip.text: page.vwaTr("在「框选风格」中松手即应用。按住 Shift 拖动只选时间。")
-                                }
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    spacing: 2
-                                    PanelLabel { Layout.fillWidth: true; theme: page.theme; text: page.vwaTr("片段") }
-                                    EditorButton {
-                                        objectName: "undoTuningRegions"
-                                        theme: page.theme; text: page.vwaTr("撤销"); quiet: true
-                                        enabled: !page.busy && !!page.view.canUndoRegions
-                                        onClicked: page.controller.undoRegions()
-                                    }
-                                    EditorButton {
-                                        objectName: "redoTuningRegions"
-                                        theme: page.theme; text: page.vwaTr("重做"); quiet: true
-                                        enabled: !page.busy && !!page.view.canRedoRegions
-                                        onClicked: page.controller.redoRegions()
-                                    }
-                                    EditorButton {
-                                        objectName: "clearTuningRegions"
-                                        theme: page.theme; text: page.vwaTr("清空…"); quiet: true
-                                        enabled: !page.busy && page.regionCount > 0
-                                        onClicked: clearRegionsDialog.open()
-                                    }
-                                }
-                                Rectangle {
-                                    Layout.fillWidth: true
-                                    visible: page.regionCount > 0
-                                    Layout.preferredHeight: Math.min(page.regionCount, 3) * Math.round(42 * page.scale) + 2
-                                    radius: Math.round(8 * page.scale)
-                                    color: page.theme.base
-                                    border.width: 1
-                                    border.color: page.theme.line
-                                    clip: true
-
-                                    ListView {
-                                        id: regionList
-                                        objectName: "tuningRegions"
-                                        anchors.fill: parent
-                                        anchors.margins: 1
-                                        clip: true
-                                        model: page.regions
-                                        boundsBehavior: Flickable.StopAtBounds
-                                        ScrollBar.vertical: ScrollBar {}
-
-                                        delegate: Rectangle {
-                                            id: regionRow
-                                            required property var modelData
-                                            width: regionList.width
-                                            height: Math.round(42 * page.scale)
-                                            color: regionHover.hovered ? page.theme.raised : "transparent"
-
-                                            HoverHandler { id: regionHover }
-
-                                            RowLayout {
-                                                anchors.fill: parent
-                                                anchors.leftMargin: Math.round(9 * page.scale)
-                                                anchors.rightMargin: Math.round(6 * page.scale)
-                                                spacing: Math.round(3 * page.scale)
-
-                                                Rectangle {
-                                                    implicitWidth: Math.round(8 * page.scale)
-                                                    implicitHeight: Math.round(30 * page.scale)
-                                                    radius: width / 2
-                                                    color: page.textOf(regionRow.modelData.color).length > 0
-                                                        ? regionRow.modelData.color
-                                                        : page.styleColor(regionRow.modelData.style)
-                                                }
-
-                                                ColumnLayout {
-                                                    Layout.fillWidth: true
-                                                    spacing: 0
-                                                    Text {
-                                                        Layout.fillWidth: true
-                                                        text: regionRow.modelData.label
-                                                            || page.styleLabel(regionRow.modelData.style)
-                                                        color: page.theme.text
-                                                        font.pixelSize: Math.round(11 * page.scale)
-                                                        font.weight: Font.DemiBold
-                                                        elide: Text.ElideRight
-                                                        textFormat: Text.PlainText
-                                                    }
-                                                    Text {
-                                                        Layout.fillWidth: true
-                                                        text: page.trackName(regionRow.modelData.trackId)
-                                                            + " · " + Number(regionRow.modelData.start).toFixed(2)
-                                                            + "–" + Number(regionRow.modelData.end).toFixed(2) + " s"
-                                                        color: page.theme.muted
-                                                        font.pixelSize: Math.round(10 * page.scale)
-                                                        elide: Text.ElideRight
-                                                        textFormat: Text.PlainText
-                                                    }
-                                                }
-
-                                                EditorButton {
-                                                    theme: page.theme
-                                                    glyph: "edit"
-                                                    text: page.vwaTr("编辑片段")
-                                                    quiet: true
-                                                    enabled: !page.busy
-                                                    onClicked: page.controller.editRegion(String(regionRow.modelData.id))
-                                                }
-                                                EditorButton {
-                                                    objectName: "updateTuningRegion_" + String(regionRow.modelData.id)
-                                                    theme: page.theme
-                                                    glyph: "check"
-                                                    text: page.vwaTr("更新片段")
-                                                    quiet: true
-                                                    enabled: !page.busy && page.hasRange && !page.styleRegion
-                                                        && page.textOf(regionRow.modelData.id).length > 0
-                                                    onClicked: page.controller.updateRegion(
-                                                        String(regionRow.modelData.id))
-                                                    Accessible.name: page.vwaTr("用当前选区和风格更新此逐轨片段")
-                                                    ToolTip.text: page.vwaTr("轨道按此片段固定；范围和风格取当前选区")
-                                                }
-                                                EditorButton {
-                                                    theme: page.theme
-                                                    text: page.vwaTr("移除")
-                                                    quiet: true
-                                                    enabled: !page.busy
-                                                        && page.textOf(regionRow.modelData.id).length > 0
-                                                    onClicked: page.controller.removeRegion(
-                                                        String(regionRow.modelData.id))
-                                                }
-                                            }
-
-                                            Rectangle {
-                                                anchors.left: parent.left
-                                                anchors.right: parent.right
-                                                anchors.bottom: parent.bottom
-                                                height: 1
-                                                color: page.theme.line
-                                                opacity: 0.7
-                                            }
-                                        }
-                                    }
-                                }
-
-                            }
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                visible: page.inspectorTab === "source"
-                                spacing: page.editorGap
-                                PanelLabel {
-                                    theme: page.theme
-                                    text: page.vwaTr("表达来源与调音选项")
-                                }
-
-                                GridLayout {
-                                    Layout.fillWidth: true
-                                    columns: 2
-                                    columnSpacing: Math.round(5 * page.scale)
-                                    rowSpacing: Math.round(5 * page.scale)
-
-                                    EditorButton {
-                                        objectName: "expressionPreserve"
-                                        Layout.fillWidth: true
-                                        theme: page.theme
-                                        text: page.vwaTr("保留原表现")
-                                        selected: page.textOf(page.view.expressionMode) === "preserve"
-                                        enabled: !page.busy && page.hasSource
-                                        onClicked: page.controller.setExpressionMode("preserve")
-                                    }
-                                    EditorButton {
-                                        objectName: "expressionReference"
-                                        Layout.fillWidth: true
-                                        theme: page.theme
-                                        text: page.vwaTr("参考音频")
-                                        selected: page.textOf(page.view.expressionMode) === "reference"
-                                        enabled: !page.busy && page.hasSource && !page.view.formatReadOnly
-                                            && !page.expressionSourceReason("reference")
-                                        onClicked: page.controller.setExpressionMode("reference")
-                                    }
-                                    EditorButton {
-                                        objectName: "expressionCalibrated"
-                                        Layout.fillWidth: true
-                                        theme: page.theme
-                                        text: page.vwaTr("校准 + 参考")
-                                        selected: page.textOf(page.view.expressionMode) === "calibrated"
-                                        enabled: !page.busy && page.hasSource && !page.view.formatReadOnly
-                                            && !page.expressionSourceReason("calibrated")
-                                        onClicked: page.controller.setExpressionMode("calibrated")
-                                    }
-                                    EditorButton {
-                                        objectName: "expressionRetained"
-                                        Layout.fillWidth: true
-                                        theme: page.theme
-                                        text: page.vwaTr("沿用原参数")
-                                        selected: page.textOf(page.view.expressionMode) === "retained"
-                                        enabled: !page.busy && page.hasSource && !page.view.formatReadOnly
-                                            && !page.expressionSourceReason("retained")
-                                        onClicked: page.controller.setExpressionMode("retained")
-                                    }
-                                }
-
-                                HelperText {
-                                    Layout.fillWidth: true
-                                    theme: page.theme
-                                    readonly property string currentMode: page.textOf(page.view.expressionMode)
-                                    text: page.expressionSourceReason(currentMode)
-                                        || (currentMode === "reference"
-                                            ? page.vwaTr("选择与工程时间对齐的分轨干声，每条目标轨对应一份。")
-                                            : currentMode === "retained"
-                                                ? page.vwaTr("选择同格式、同音符时间的工程。源轨索引从首条演唱轨的 0 开始。")
-                                                : page.expressionSourceReason("reference")
-                                                    || page.expressionSourceReason("calibrated"))
-                                    visible: page.hasSource && text.length > 0
-                                }
-
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: page.vwaTr("焦点轨：") + (page.activeId.length > 0
-                                        ? page.trackName(page.activeId) : page.vwaTr("未选择"))
-                                    color: page.theme.text
-                                    font.pixelSize: Math.round(11 * page.scale)
-                                    font.weight: Font.DemiBold
-                                    wrapMode: Text.Wrap
-                                    textFormat: Text.PlainText
-                                }
-                                HelperText {
-                                    Layout.fillWidth: true
-                                    visible: text.length > 0
-                                    theme: page.theme
-                                    text: page.textOf(page.view.trackReadOnlyReason)
-                                }
-
-                                GridLayout {
-                                    Layout.fillWidth: true
-                                    columns: page.compact ? 1 : 2
-                                    columnSpacing: Math.round(6 * page.scale)
-                                    rowSpacing: Math.round(6 * page.scale)
-
-                                    HelperText {
-                                        Layout.alignment: Qt.AlignVCenter
-                                        theme: page.theme
-                                        text: page.vwaTr("参考音频")
-                                        visible: page.expressionSourceAllows(["reference", "calibrated"])
-                                    }
-                                    EditorButton {
-                                        objectName: "bindReferenceAudio"
-                                        visible: page.expressionSourceAllows(["reference", "calibrated"])
-                                        Layout.fillWidth: true
-                                        theme: page.theme
-                                        text: page.textOf(page.bindingField("reference", "")).length > 0
-                                            ? page.vwaTr("更换参考…") : page.vwaTr("选择参考…")
-                                        enabled: !page.busy && page.activeId.length > 0
-                                            && page.activeTrackData !== null
-                                            && page.activeTrackData.editable !== false
-                                            && page.expressionSourceAllows(["reference", "calibrated"])
-                                        onClicked: {
-                                            referenceDialog.trackId = page.activeId
-                                            referenceDialog.open()
-                                        }
-                                    }
-                                    Text {
-                                        Layout.fillWidth: true
-                                        Layout.columnSpan: page.compact ? 1 : 2
-                                        visible: page.textOf(page.bindingField("reference", "")).length > 0
-                                        text: page.fileName(page.bindingField("reference", ""))
-                                        color: page.theme.muted
-                                        font.pixelSize: Math.round(10 * page.scale)
-                                        elide: Text.ElideMiddle
-                                        textFormat: Text.PlainText
-                                    }
-                                    HelperText {
-                                        theme: page.theme
-                                        visible: page.textOf(page.bindingField("reference", "")).length > 0
-                                        text: page.vwaTr("参考声部")
-                                    }
-                                    UiComboBox {
-                                        theme: page.theme
-                                        Layout.fillWidth: true
-                                        visible: page.textOf(page.bindingField("reference", "")).length > 0
-                                        model: [{label: page.vwaTr("主唱"), value: "lead"}, {label: page.vwaTr("和声"), value: "backing"},
-                                                {label: page.vwaTr("合并人声"), value: "vocals"}]
-                                        currentIndex: indexOfValue(page.bindingField("referenceVoice", ""))
-                                        enabled: !page.busy
-                                        onActivated: page.controller.setReferenceVoice(page.activeId, currentValue)
-                                    }
-
-                                    HelperText {
-                                        Layout.alignment: Qt.AlignVCenter
-                                        theme: page.theme
-                                        text: page.vwaTr("校准配置")
-                                        visible: page.view.expressionMode === "calibrated"
-                                    }
-                                    EditorButton {
-                                        objectName: "bindCalibrationProfile"
-                                        visible: page.view.expressionMode === "calibrated"
-                                        Layout.fillWidth: true
-                                        theme: page.theme
-                                        text: page.vwaTr("选择 JSON…")
-                                        enabled: !page.busy && page.hasSource
-                                            && page.textOf(page.view.expressionMode) === "calibrated"
-                                        onClicked: calibrationDialog.open()
-                                    }
-                                    EditorButton {
-                                        objectName: "tuningChooseWorkshopCalibration"
-                                        visible: page.view.expressionMode === "calibrated"
-                                        Layout.fillWidth: true
-                                        Layout.columnSpan: page.compact ? 1 : 2
-                                        theme: page.theme
-                                        text: page.vwaTr("从工坊预设库选用")
-                                        enabled: !page.busy
-                                        onClicked: page.workshopRequested("presets")
-                                    }
-                                    Text {
-                                        Layout.fillWidth: true
-                                        Layout.columnSpan: page.compact ? 1 : 2
-                                        visible: page.textOf(page.view.calibration).length > 0
-                                        text: page.controller.calibrationLabel(page.textOf(page.view.calibration))
-                                        color: page.theme.muted
-                                        font.pixelSize: Math.round(10 * page.scale)
-                                        elide: Text.ElideMiddle
-                                        textFormat: Text.PlainText
-                                    }
-
-                                    HelperText {
-                                        Layout.alignment: Qt.AlignVCenter
-                                        theme: page.theme
-                                        text: page.vwaTr("原参数工程")
-                                        visible: page.view.expressionMode === "retained"
-                                    }
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        visible: page.view.expressionMode === "retained"
-                                        spacing: Math.round(5 * page.scale)
-                                        SpinBox {
-                                            id: retainedIndexInput
-                                            objectName: "retainedSourceTrackIndex"
-                                            Layout.preferredWidth: Math.round(96 * page.scale)
-                                            from: 0
-                                            to: 255
-                                            value: page.retainedIndexDraft
-                                            editable: true
-                                            enabled: !page.busy && page.activeId.length > 0
-                                            Accessible.name: page.vwaTr("原工程源轨索引")
-                                            onValueModified: page.retainedIndexDraft = value
-                                        }
-                                        EditorButton {
-                                            objectName: "bindRetainedProject"
-                                            Layout.fillWidth: true
-                                            theme: page.theme
-                                            text: page.textOf(page.bindingField("retained", "")).length > 0
-                                                ? page.vwaTr("更换原工程…") : page.vwaTr("选择原工程…")
-                                            enabled: !page.busy && page.activeId.length > 0
-                                                && page.activeTrackData !== null
-                                                && page.activeTrackData.editable !== false
-                                                && page.textOf(page.view.expressionMode) === "retained"
-                                            onClicked: {
-                                                retainedDialog.trackId = page.activeId
-                                                retainedDialog.sourceTrackIndex = page.retainedIndexDraft
-                                                retainedDialog.open()
-                                            }
-                                        }
-                                    }
-                                    Text {
-                                        Layout.fillWidth: true
-                                        Layout.columnSpan: page.compact ? 1 : 2
-                                        visible: page.textOf(page.bindingField("retained", "")).length > 0
-                                        text: page.fileName(page.bindingField("retained", ""))
-                                            + page.vwaTr("  ·  源轨索引 ") + page.retainedIndexDraft
-                                        color: page.theme.muted
-                                        font.pixelSize: Math.round(10 * page.scale)
-                                        elide: Text.ElideMiddle
-                                        textFormat: Text.PlainText
-                                    }
-                                }
-
-                                GridLayout {
-                                    Layout.fillWidth: true
-                                    visible: page.view.expressionMode === "reference"
-                                    columns: 2
-                                    columnSpacing: Math.round(5 * page.scale)
-                                    rowSpacing: Math.round(5 * page.scale)
-
-                                    EditorButton {
-                                        objectName: "optionReferenceDynamics"
-                                        visible: selected || (page.view.referenceControls || []).indexOf("dynamics") >= 0
-                                        Layout.fillWidth: true
-                                        theme: page.theme
-                                        text: page.boolOptionText("reference_dynamics", page.vwaTr("参考力度"))
-                                        selected: boolOr(page.optionValue("reference_dynamics", false), false)
-                                        enabled: !page.busy
-                                        onClicked: page.toggleOption("reference_dynamics")
-                                    }
-                                    EditorButton {
-                                        objectName: "optionReferenceTension"
-                                        visible: selected || (page.view.referenceControls || []).indexOf("tension") >= 0
-                                        Layout.fillWidth: true
-                                        theme: page.theme
-                                        text: page.boolOptionText("reference_tension", page.vwaTr("参考张力"))
-                                        selected: boolOr(page.optionValue("reference_tension", false), false)
-                                        enabled: !page.busy
-                                        onClicked: page.toggleOption("reference_tension")
-                                    }
-                                    EditorButton {
-                                        objectName: "optionReferenceBreathiness"
-                                        visible: selected || (page.view.referenceControls || []).indexOf("breathiness") >= 0
-                                        Layout.fillWidth: true
-                                        theme: page.theme
-                                        text: page.boolOptionText("reference_breathiness", page.vwaTr("参考气声"))
-                                        selected: boolOr(page.optionValue("reference_breathiness", false), false)
-                                        enabled: !page.busy
-                                        onClicked: page.toggleOption("reference_breathiness")
-                                    }
-                                    EditorButton {
-                                        objectName: "optionReferenceVoicing"
-                                        visible: selected || (page.view.referenceControls || []).indexOf("voicing") >= 0
-                                        Layout.fillWidth: true
-                                        theme: page.theme
-                                        text: page.boolOptionText("reference_voicing", page.vwaTr("参考发声"))
-                                        selected: boolOr(page.optionValue("reference_voicing", false), false)
-                                        enabled: !page.busy
-                                        onClicked: page.toggleOption("reference_voicing")
-                                    }
-                                }
-
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    visible: page.expressionSourceAllows(["reference", "calibrated"])
-                                    spacing: Math.round(5 * page.scale)
-                                    HelperText {
-                                        Layout.alignment: Qt.AlignVCenter
-                                        theme: page.theme
-                                        text: page.vwaTr("动态强度")
-                                    }
-                                    PercentSlider {
-                                        Layout.fillWidth: true
-                                        objectName: "tuningDynamicsStrengthSlider"
-                                        strength: page.numberOr(page.optionValue("dynamics_strength", 0), 0)
-                                        enabled: !page.busy && page.optionKnown("dynamics_strength")
-                                        Accessible.name: page.vwaTr("动态强度")
-                                        onMoved: page.controller.setTuningOption("dynamics_strength", value / 100)
-                                    }
-                                    HelperText {
-                                        theme: page.theme
-                                        Layout.minimumWidth: Math.round(34 * page.scale)
-                                        horizontalAlignment: Text.AlignRight
-                                        text: page.optionKnown("dynamics_strength")
-                                            ? page.strengthText(page.optionValue("dynamics_strength", 0)) : "—"
-                                    }
-                                }
-
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    visible: !page.nativeStyleProject
-                                    spacing: Math.round(5 * page.scale)
-                                    HelperText {
-                                        Layout.alignment: Qt.AlignVCenter
-                                        theme: page.theme
-                                        text: page.vwaTr("表达采样")
-                                    }
-                                    EditorButton {
-                                        objectName: "tuningDensityDense"
-                                        Layout.fillWidth: true
-                                        theme: page.theme
-                                        text: page.vwaTr("加密采样")
-                                        selected: page.optionKnown("expression_density")
-                                            && String(page.optionValue("expression_density", "")) === "dense"
-                                        enabled: !page.busy
-                                        onClicked: page.controller.setTuningOption("expression_density", "dense")
-                                    }
-                                    EditorButton {
-                                        objectName: "tuningDensityOriginal"
-                                        Layout.fillWidth: true
-                                        theme: page.theme
-                                        text: page.vwaTr("原始采样")
-                                        selected: page.optionKnown("expression_density")
-                                            && String(page.optionValue("expression_density", "")) === "original"
-                                        enabled: !page.busy
-                                        onClicked: page.controller.setTuningOption("expression_density", "original")
-                                    }
-                                }
-
-                                HelperText {
-                                    Layout.fillWidth: true
-                                    theme: page.theme
-                                    text: page.vwaTr("这里只编辑工程与参数；声库合成、真实听感和外部编辑器中的手动渲染保持独立。")
-                                }
-                            }
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                visible: page.inspectorTab === "presets"
-                                spacing: page.editorGap
-                                PanelLabel {
-                                    theme: page.theme
-                                    text: page.vwaTr("调音预设与风格")
-                                }
-
-
-                                UiComboBox {
-                                    id: presetPicker
-                                    objectName: "tuningPresetPicker"
-                                    Layout.fillWidth: true
-                                    theme: page.theme
-                                    model: page.presets
-                                    textRole: "label"
-                                    valueRole: "key"
-                                    currentIndex: page.presetKeyIndex(page.selectedPresetKey)
-                                    enabled: !page.busy && page.presets.length > 0
-                                    Accessible.name: page.vwaTr("调音预设与风格")
-                                    onActivated: function(index) {
-                                        if (index >= 0 && index < page.presets.length) {
-                                            page.selectedPresetKey = String(page.presets[index].key)
-                                            page.controller.dismissPresetReview()
-                                        }
-                                    }
-                                }
-
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    EditorButton {
-                                        objectName: "previewTuningPreset"
-                                        Layout.fillWidth: true
-                                        theme: page.theme
-                                        text: page.vwaTr("查看差异")
-                                        enabled: page.hasSource && !page.busy && page.selectedPresetKey.length > 0
-                                        onClicked: page.controller.previewPreset(page.selectedPresetKey)
-                                    }
-                                    EditorButton {
-                                        objectName: "unbindTuningPreset"
-                                        Layout.fillWidth: true
-                                        theme: page.theme
-                                        text: page.vwaTr("解除绑定")
-                                        enabled: !page.busy && page.textOf(page.view.presetName).length > 0
-                                        onClicked: page.controller.unbindPreset()
-                                    }
-                                }
-                                ColumnLayout {
-                                    readonly property var review: page.view.presetReview || ({})
-                                    Layout.fillWidth: true
-                                    visible: !!review.name
-                                    spacing: page.editorGap
-                                    HelperText {
-                                        Layout.fillWidth: true
-                                        theme: page.theme
-                                        text: parent.review.name + (parent.review.isRecipe ? ""
-                                              : parent.review.brushOnly ? page.vwaTr(" · 仅下一片段") : page.vwaTr(" · 绑定当前工程"))
-                                    }
-                                    HelperText {
-                                        Layout.fillWidth: true
-                                        theme: page.theme
-                                        visible: !!parent.review.isRecipe
-                                        text: page.textOf(parent.review.channels) + " · " + page.vwaTr("默认强度")
-                                              + " " + page.strengthText(parent.review.strength)
-                                    }
-                                    Repeater {
-                                        model: parent.review.changes || []
-                                        HelperText {
-                                            required property var modelData
-                                            Layout.fillWidth: true
-                                            theme: page.theme
-                                            text: page.presetFieldName(modelData.field) + "："
-                                                + page.presetValue(modelData.field, modelData.before) + " → "
-                                                + page.presetValue(modelData.field, modelData.after)
-                                        }
-                                    }
-                                    HelperText {
-                                        Layout.fillWidth: true
-                                        theme: page.theme
-                                        visible: (parent.review.missing || []).length > 0
-                                        text: (parent.review.missing || []).join("\n")
-                                    }
-                                    EditorButton {
-                                        objectName: "applyReviewedTuningPreset"
-                                        Layout.fillWidth: true
-                                        theme: page.theme
-                                        text: parent.review.isRecipe ? page.vwaTr("选用风格")
-                                            : parent.review.brushOnly ? page.vwaTr("应用到下一片段") : page.vwaTr("确认绑定预设")
-                                        enabled: !page.busy
-                                        primary: true
-                                        onClicked: {
-                                            const isRecipe = parent.review.isRecipe
-                                            page.controller.confirmPreset()
-                                            if (isRecipe)
-                                                page.inspectorTab = "style"
-                                        }
-                                    }
-                                }
-
-                                Text {
-                                    Layout.fillWidth: true
-                                    text: page.textOf(page.view.presetName).length > 0
-                                        ? page.vwaTr("当前工程绑定：") + page.view.presetName
-                                        : page.vwaTr("当前工程尚未绑定预设。")
-                                    color: page.theme.muted
-                                    font.pixelSize: Math.round(11 * page.scale)
-                                    wrapMode: Text.Wrap
-                                    textFormat: Text.PlainText
-                                }
-
-                                Text {
-                                    Layout.fillWidth: true
-                                    visible: page.textOf(page.view.presetPending).length > 0
-                                    text: page.textOf(page.view.presetPending)
-                                    color: page.theme.attention
-                                    font.pixelSize: Math.round(11 * page.scale)
-                                    wrapMode: Text.Wrap
-                                    textFormat: Text.PlainText
-                                }
-
-                                GridLayout {
-                                    Layout.fillWidth: true
-                                    columns: 2
-                                    columnSpacing: Math.round(6 * page.scale)
-                                    rowSpacing: Math.round(6 * page.scale)
-                                    EditorButton {
-                                        objectName: "importTuningPresets"
-                                        Layout.fillWidth: true
-                                        theme: page.theme
-                                        text: page.vwaTr("导入附加…")
-                                        enabled: !page.busy
-                                        onClicked: presetImportDialog.open()
-                                    }
-                                    EditorButton {
-                                        objectName: "exportTuningPreset"
-                                        Layout.fillWidth: true
-                                        theme: page.theme
-                                        text: page.vwaTr("导出预设…")
-                                        enabled: !page.busy && page.selectedPresetKey.length > 0
-                                        onClicked: presetExportDialog.open()
-                                    }
-                                    EditorButton {
-                                        objectName: "saveTuningPreset"
-                                        Layout.fillWidth: true
-                                        theme: page.theme
-                                        text: page.vwaTr("保存到本机库")
-                                        enabled: !page.busy && page.hasSource
-                                        onClicked: {
-                                            presetNameField.text = page.textOf(page.view.presetName)
-                                            presetNameDialog.open()
-                                        }
-                                    }
-                                }
-                            }
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                visible: page.inspectorTab === "result"
-                                spacing: page.editorGap
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    spacing: Math.round(7 * page.scale)
-                                    PanelLabel {
-                                        Layout.fillWidth: true
-                                        theme: page.theme
-                                        text: page.vwaTr("候选与结果")
-                                    }
-                                    Rectangle {
-                                        implicitHeight: Math.round(22 * page.scale)
-                                        implicitWidth: stateText.implicitWidth + Math.round(14 * page.scale)
-                                        radius: height / 2
-                                        color: Qt.rgba(page.statusColor().r, page.statusColor().g,
-                                            page.statusColor().b, 0.16)
-                                        Text {
-                                            id: stateText
-                                            anchors.centerIn: parent
-                                            text: page.statusLabel()
-                                            color: page.statusColor()
-                                            font.pixelSize: Math.round(10 * page.scale)
-                                            font.weight: Font.DemiBold
-                                            textFormat: Text.PlainText
-                                        }
-                                    }
-                                }
-
-                                Text {
-                                    Layout.fillWidth: true
-                                    visible: page.textOf(page.view.previewSummary).length > 0
-                                    text: page.textOf(page.view.previewSummary)
-                                    color: page.theme.text
-                                    font.pixelSize: Math.round(11 * page.scale)
-                                    wrapMode: Text.Wrap
-                                    textFormat: Text.PlainText
-                                }
-
-                                Text {
-                                    Layout.fillWidth: true
-                                    visible: page.textOf(page.view.message).length > 0
-                                    text: page.textOf(page.view.message)
-                                    color: page.statusColor()
-                                    font.pixelSize: Math.round(11 * page.scale)
-                                    wrapMode: Text.Wrap
-                                    textFormat: Text.PlainText
-                                }
-
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    visible: page.candidatePresent
-                                    spacing: Math.round(7 * page.scale)
-                                    Text {
-                                        Layout.fillWidth: true
-                                        text: page.candidateText()
-                                        color: page.theme.text
-                                        font.pixelSize: Math.round(11 * page.scale)
-                                        elide: Text.ElideMiddle
-                                        textFormat: Text.PlainText
-                                        HoverHandler { id: candidateHover }
-                                        ToolTip.visible: candidateHover.hovered
-                                        ToolTip.text: typeof page.view.candidate === "string"
-                                            ? page.view.candidate : page.candidateText()
-                                    }
-                                    Text {
-                                        visible: boolOr(page.view.candidateStale, false)
-                                        text: page.vwaTr("已过期")
-                                        color: page.theme.error
-                                        font.pixelSize: Math.round(10 * page.scale)
-                                        font.weight: Font.DemiBold
-                                        textFormat: Text.PlainText
-                                    }
-                                    EditorButton {
-                                        objectName: "openTuningCandidate"
-                                        theme: page.theme
-                                        visible: !page.ufdataProject
-                                        text: page.vwaTr("打开候选")
-                                        enabled: page.candidateOpenable && !page.view.busy
-                                            && (!page.acepProject || !!page.view.savedCopy)
-                                        onClicked: page.controller.openCandidate()
-                                    }
-                                }
-
-                                HelperText {
-                                    Layout.fillWidth: true
-                                    theme: page.theme
-                                    visible: page.candidatePresent
-                                    text: {
-                                        if (boolOr(page.view.candidateHistorical, false)) {
-                                            const reason = page.textOf(page.view.message)
-                                            return page.vwaTr("这是安全保留的历史候选；当前完整回执核验失败，因此不能登记。")
-                                                + (reason.length > 0 ? "\n" + reason : "")
-                                        }
-                                        const report = page.view.candidateDetails || {}
-                                        const state = {done:page.vwaTr("已处理"), applied:page.vwaTr("已处理"),
-                                            partial:page.vwaTr("部分处理"), unchanged:page.vwaTr("无变化")}[report.status] || ""
-                                        return state + " · " + (report.tracks || 0) + page.vwaTr(" 轨")
-                                            + (report.notesPreserved ? page.vwaTr(" · 音符与时值保留") : "")
-                                            + (report.noteChanges ? " · " + page.vwaTr("已修改 {count} 个音符")
-                                                .replace("{count}", report.noteChanges) : "")
-                                            + (report.pitchSpans ? " · " + page.vwaTr("手绘 {count} 段")
-                                                .replace("{count}", report.pitchSpans) : "")
-                                            + (report.pitchChanged ? page.vwaTr("\n已修改局部音高") : "")
-                                            + "\nSHA " + page.shortHash(report.sha256)
-                                    }
-                                }
-                                HelperText {
-                                    Layout.fillWidth: true
-                                    theme: page.theme
-                                    visible: !!page.view.formatNotice && (page.acepProject || page.ufdataProject)
-                                    text: page.ufdataProject
-                                        ? page.vwaTr("请在 ACE Studio 的原工程中导入另存的 UFData。")
-                                        : page.textOf(page.view.formatNotice)
-                                }
-                                Flow {
-                                    Layout.fillWidth: true
-                                    spacing: page.editorGap
-                                    visible: !!page.view.candidateVerified
-                                    EditorButton {
-                                        objectName: "saveTuningCandidate"
-                                        theme: page.theme
-                                        text: page.acepProject ? page.vwaTr("另存 ACEP…")
-                                            : page.ufdataProject ? page.vwaTr("另存 UFData…")
-                                            : page.vprProject ? page.vwaTr("另存 VPR…")
-                                            : page.vsqxProject ? page.vwaTr("另存 VSQX…")
-                                            : page.ustxProject ? page.vwaTr("另存 USTX…") : page.vwaTr("另存 SVP…")
-                                        enabled: !page.view.busy
-                                        onClicked: {
-                                            if (page.acepProject)
-                                                candidateSaveDialog.selectedFile = page.controller.suggestedCandidatePath()
-                                            candidateSaveDialog.open()
-                                        }
-                                    }
-                                    EditorButton {
-                                        objectName: "openTuningReceipt"
-                                        theme: page.theme
-                                        text: boolOr(page.view.candidateHistorical, false) ? page.vwaTr("查看原回执") : page.vwaTr("核验回执")
-                                        visible: !!page.view.candidateVerified
-                                            || page.textOf(page.view.candidateReceipt).length > 0
-                                        enabled: !page.view.busy
-                                        onClicked: page.controller.openResultReceipt()
-                                    }
-                                }
-                                HelperText {
-                                    Layout.fillWidth: true
-                                    theme: page.theme
-                                    visible: !!page.view.savedCopy
-                                    text: page.vwaTr("另存：") + page.fileName(page.view.savedCopy)
-                                }
-
-                                HelperText {
-                                    Layout.fillWidth: true
-                                    visible: boolOr(page.view.candidateStale, false)
-                                    theme: page.theme
-                                    text: page.vwaTr("候选基线已变化，请重新冻结、生成或明确确认后再继续。")
-                                }
-                                EditorButton {
-                                    objectName: "tuningOpenMixdown"
-                                    theme: page.theme
-                                    visible: page.candidatePresent
-                                    text: page.vwaTr("导入已合成的歌声…")
-                                    enabled: !page.busy
-                                    onClicked: page.controller.openMixdown()
-                                }
-
-                                Rectangle {
-                                    Layout.fillWidth: true
-                                    visible: boolOr(page.view.candidateNeedsConfirmation, false)
-                                    implicitHeight: confirmLayout.implicitHeight + Math.round(20 * page.scale)
-                                    radius: Math.round(8 * page.scale)
-                                    color: page.theme.raised
-                                    border.width: 1
-                                    border.color: boolOr(page.view.candidateConfirmed, false)
-                                        ? page.theme.success : page.theme.attention
-
-                                    ColumnLayout {
-                                        id: confirmLayout
-                                        anchors.left: parent.left
-                                        anchors.right: parent.right
-                                        anchors.top: parent.top
-                                        anchors.margins: Math.round(10 * page.scale)
-                                        spacing: Math.round(6 * page.scale)
-
-                                        Text {
-                                            Layout.fillWidth: true
-                                            text: boolOr(page.view.candidateConfirmed, false)
-                                                ? page.vwaTr("候选基线已明确确认。")
-                                                : page.vwaTr("候选与当前工程基线不同，需要人工确认。")
-                                            color: boolOr(page.view.candidateConfirmed, false)
-                                                ? page.theme.success : page.theme.attention
-                                            font.pixelSize: Math.round(11 * page.scale)
-                                            font.weight: Font.DemiBold
-                                            wrapMode: Text.Wrap
-                                            textFormat: Text.PlainText
-                                        }
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            EditorButton {
-                                                objectName: "confirmCandidateBaseline"
-                                                Layout.fillWidth: true
-                                                theme: page.theme
-                                                text: page.vwaTr("确认候选基线")
-                                                primary: !boolOr(page.view.candidateConfirmed, false)
-                                                enabled: !page.busy
-                                                    && !boolOr(page.view.candidateConfirmed, false)
-                                                onClicked: page.controller.confirmCandidate(true)
-                                            }
-                                            EditorButton {
-                                                objectName: "unconfirmCandidateBaseline"
-                                                Layout.fillWidth: true
-                                                theme: page.theme
-                                                text: page.vwaTr("恢复待确认")
-                                                enabled: !page.busy
-                                                    && boolOr(page.view.candidateConfirmed, false)
-                                                onClicked: page.controller.confirmCandidate(false)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                            TuningInspectorNoteStyle { page: page }
+                            TuningInspectorSourceResult { page: page }
                         }
                     }
-                    Divider {}
+                    TuningControls.Divider {}
                     Text {
                         Layout.fillWidth: true
                         visible: page.inspectorTab !== "result" && page.view.state === "failed"
@@ -3102,7 +1800,7 @@ Item {
                         columnSpacing: Math.round(6 * page.scale)
                         rowSpacing: Math.round(6 * page.scale)
 
-                        EditorButton {
+                        TuningControls.EditorButton {
                             objectName: "freezeTuning"
                             Layout.fillWidth: true
                             theme: page.theme
@@ -3110,7 +1808,7 @@ Item {
                             enabled: !page.busy && boolOr(page.view.canFreeze, false)
                             onClicked: { page.inspectorTab = "result"; page.controller.freeze() }
                         }
-                        EditorButton {
+                        TuningControls.EditorButton {
                             objectName: "runTuning"
                             Layout.fillWidth: true
                             theme: page.theme
@@ -3119,7 +1817,7 @@ Item {
                             enabled: !page.busy && boolOr(page.view.canRun, false)
                             onClicked: { page.inspectorTab = "result"; page.controller.run() }
                         }
-                        EditorButton {
+                        TuningControls.EditorButton {
                             objectName: "cancelTuning"
                             Layout.fillWidth: true
                             theme: page.theme
@@ -3128,7 +1826,7 @@ Item {
                             enabled: visible
                             onClicked: page.controller.cancel()
                         }
-                        EditorButton {
+                        TuningControls.EditorButton {
                             objectName: "registerTuningResult"
                             Layout.fillWidth: true
                             theme: page.theme
@@ -3144,435 +1842,9 @@ Item {
         }
     }
 
-    TuningLyricBatchDialog {
-        id: lyricBatchDialog
-        theme: page.theme
-        controller: page.controller
-        sourceKey: timelineRoll.sourceKey
-        onNoteRequested: note => {
-            timelineRoll.locateNote(note, true)
-            timelineRoll.forceActiveFocus(Qt.OtherFocusReason)
-        }
-    }
 
-    Dialog {
-        id: issuesDialog
-        objectName: "tuningIssuesDialog"
-        title: page.vwaTr("编辑问题")
-        property var review: ({})
-        readonly property var rows: review.rows || []
-        parent: Overlay.overlay
-        anchors.centerIn: parent
-        modal: true
-        focus: true
-        width: Math.min(parent.width - 40, Math.round(570 * page.scale))
-        height: Math.min(parent.height - 48, Math.round((rows.length ? 380 : 175) * page.scale))
-        standardButtons: Dialog.Close
-        contentItem: ColumnLayout {
-            HelperText {
-                theme: page.theme
-                Layout.fillWidth: true
-                text: issuesDialog.rows.length
-                    ? page.vwaTr("点击一项，在当前轨道定位音符。")
-                    : page.vwaTr("当前轨道未发现重叠音符或受保护发音。")
-            }
-            ListView {
-                objectName: "tuningIssueList"
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                model: issuesDialog.rows
-                clip: true
-                spacing: Math.round(5 * page.scale)
-                ScrollBar.vertical: ScrollBar {}
-                delegate: EditorButton {
-                    required property var modelData
-                    required property int index
-                    objectName: "tuningIssueLocate_" + index
-                    width: ListView.view.width - Math.round(12 * page.scale)
-                    theme: page.theme
-                    leftAligned: true
-                    text: Number(modelData.start).toFixed(2) + " s  ·  " + modelData.lyric
-                        + (modelData.otherLyric ? " / " + modelData.otherLyric : "") + "  ·  " + modelData.reason
-                    ToolTip.visible: hovered || visualFocus
-                    ToolTip.text: text
-                    onClicked: {
-                        issuesDialog.close()
-                        timelineRoll.locateNote(modelData)
-                    }
-                }
-            }
-            HelperText {
-                theme: page.theme
-                Layout.fillWidth: true
-                visible: !!issuesDialog.review.truncated
-                text: page.vwaTr("仅显示前 120 个问题。")
-            }
-        }
-    }
-
-    Dialog {
-        id: draftRecovery
-        objectName: "tuningDraftRecoveryDialog"
-        title: page.vwaTr("核对调音草稿")
-        modal: true
-        parent: Overlay.overlay
-        anchors.centerIn: parent
-        width: Math.min(parent.width - 40, Math.round(590 * page.scale))
-        closePolicy: Popup.NoAutoClose
-        readonly property var review: page.view.draftReview || ({})
-
-        function openReview(url) {
-            open()
-            page.controller.reviewDraftRecovery(url)
-        }
-        onClosed: page.controller.dismissDraftReview()
-        contentItem: ColumnLayout {
-            spacing: Math.round(10 * page.scale)
-            HelperText {
-                Layout.fillWidth: true
-                theme: page.theme
-                text: page.textOf(page.view.message)
-            }
-            HelperText {
-                Layout.fillWidth: true
-                theme: page.theme
-                visible: !!draftRecovery.review.path
-                text: page.vwaTr("共享版本 ") + page.textOf(draftRecovery.review.revision) + "：" + page.textOf(draftRecovery.review.shared)
-            }
-            HelperText {
-                Layout.fillWidth: true
-                theme: page.theme
-                visible: !!draftRecovery.review.path
-                text: page.vwaTr("本地副本：") + page.textOf(draftRecovery.review.local) + "\n"
-                    + page.fileName(draftRecovery.review.path)
-            }
-            HelperText {
-                Layout.fillWidth: true
-                theme: page.theme
-                visible: !!draftRecovery.review.path
-                text: page.vwaTr("载入共享草稿会保留本地副本。恢复本地编辑前，也会为当前共享版本另存副本。")
-            }
-        }
-        footer: DialogButtonBox {
-            EditorButton {
-                theme: page.theme
-                text: draftRecovery.review.path ? page.vwaTr("稍后处理") : page.vwaTr("关闭")
-                enabled: !page.view.busy
-                DialogButtonBox.buttonRole: DialogButtonBox.RejectRole
-                onClicked: draftRecovery.close()
-            }
-            EditorButton {
-                objectName: "loadSharedTuningDraft"
-                theme: page.theme
-                text: page.vwaTr("载入共享草稿")
-                enabled: !page.view.busy && !!draftRecovery.review.path
-                DialogButtonBox.buttonRole: DialogButtonBox.ActionRole
-                onClicked: page.controller.resolveDraftRecovery(false)
-            }
-            EditorButton {
-                objectName: "restoreLocalTuningDraft"
-                theme: page.theme
-                text: page.vwaTr("恢复本地编辑")
-                enabled: !page.view.busy && !!draftRecovery.review.path
-                DialogButtonBox.buttonRole: DialogButtonBox.ActionRole
-                onClicked: page.controller.resolveDraftRecovery(true)
-            }
-        }
-    }
-
-    FileDialog {
-        id: draftFile
-        title: page.vwaTr("选择本工程的草稿副本")
-        currentFolder: page.view.draftFolder
-        nameFilters: [page.vwaTr("草稿冲突副本 (*.conflict-*.json)")]
-        onAccepted: draftRecovery.openReview(selectedFile)
-    }
-
-    FileDialog {
-        id: candidateSaveDialog
-        objectName: "tuningCandidateSaveDialog"
-        title: page.vwaTr("另存已核验的调音工程")
-        fileMode: FileDialog.SaveFile
-        defaultSuffix: page.view.projectSuffix || "svp"
-        nameFilters: [page.vwaTr(page.projectFilters[defaultSuffix] || page.projectFilters.svp)]
-        onAccepted: page.controller.exportCandidate(selectedFile)
-    }
-
-    Dialog {
-        id: clearRegionsDialog
-        objectName: "tuningClearRegionsDialog"
-        title: page.vwaTr("清空风格片段")
-        modal: true
-        anchors.centerIn: parent
-        width: Math.min(page.width - 28, Math.round(375 * page.scale))
-        standardButtons: Dialog.Cancel | Dialog.Ok
-        onAccepted: page.controller.clearRegions()
-        contentItem: HelperText {
-            theme: page.theme
-            text: page.vwaTr("清空此工程的已应用片段。原工程文件不会改写，可用撤销恢复。")
-        }
-    }
-
-    FileDialog {
-        id: projectDialog
-        objectName: "tuningProjectDialog"
-        title: page.vwaTr("导入调音工程")
-        fileMode: FileDialog.OpenFile
-        nameFilters: [
-            page.vwaTr("调音工程 (*.svp *.ustx *.vpr *.vsqx *.acep *.ufdata)"),
-            page.vwaTr("Synthesizer V Studio 1 / 2 (*.svp)"),
-            page.vwaTr("OpenUtau 工程 (*.ustx)"),
-            page.vwaTr(page.projectFilters.vpr),
-            page.vwaTr(page.projectFilters.vsqx),
-            page.vwaTr(page.projectFilters.acep),
-            page.vwaTr(page.projectFilters.ufdata),
-            page.vwaTr("所有文件 (*)")
-        ]
-        onAccepted: page.controller.chooseProject(selectedFile)
-    }
-
-    FileDialog {
-        id: sessionDialog
-        objectName: "tuningSessionDialog"
-        title: page.vwaTr("继续已有调音会话")
-        currentFolder: page.view.sessionFolder || ""
-        fileMode: FileDialog.OpenFile
-        nameFilters: [
-            page.vwaTr("调音处理记录 (session.json)"),
-            page.vwaTr("所有文件 (*)")
-        ]
-        onAccepted: page.controller.resumeSession(selectedFile)
-    }
-
-    FolderDialog {
-        id: sessionLocationDialog
-        objectName: "tuningSessionLocationDialog"
-        title: page.vwaTr("选择独立调音会话位置")
-        currentFolder: page.view.sessionFolder || ""
-        onAccepted: page.controller.setSessionLocation(selectedFolder)
-    }
-
-    Dialog {
-        id: taskPickerDialog
-        objectName: "tuningTaskPickerDialog"
-        title: page.vwaTr("从任务与结果载入工程")
-        modal: true
-        parent: Overlay.overlay
-        anchors.centerIn: parent
-        width: Math.min(parent.width - 40, Math.round(580 * page.scale))
-        closePolicy: Popup.CloseOnEscape
-        property string jobId: ""
-        property string artifactId: ""
-        readonly property var taskRows: page.controller.tuningTasks || []
-        readonly property var projectRows: page.controller.tuningTaskProjects || []
-
-        contentItem: ColumnLayout {
-            spacing: Math.round(9 * page.scale)
-            HelperText {
-                Layout.fillWidth: true
-                theme: page.theme
-                text: page.textOf(page.controller.tuningTaskMessage)
-            }
-            UiComboBox {
-                objectName: "tuningTaskPickerJob"
-                Layout.fillWidth: true
-                theme: page.theme
-                model: taskPickerDialog.taskRows
-                textRole: "title"
-                valueRole: "jobId"
-                Accessible.name: page.vwaTr("准备任务")
-                function syncChoice() {
-                    if (count > 0 && taskPickerDialog.jobId.length === 0) {
-                        currentIndex = 0
-                        taskPickerDialog.jobId = String(taskPickerDialog.taskRows[0].jobId)
-                        page.controller.selectTuningTask(taskPickerDialog.jobId)
-                    }
-                }
-                onActivated: function(index) {
-                    if (index >= 0 && index < taskPickerDialog.taskRows.length) {
-                        taskPickerDialog.jobId = String(taskPickerDialog.taskRows[index].jobId)
-                        taskPickerDialog.artifactId = ""
-                        page.controller.selectTuningTask(taskPickerDialog.jobId)
-                    }
-                }
-                onCountChanged: syncChoice()
-                onModelChanged: syncChoice()
-            }
-            UiComboBox {
-                objectName: "tuningTaskPickerProject"
-                Layout.fillWidth: true
-                theme: page.theme
-                model: taskPickerDialog.projectRows
-                textRole: "label"
-                valueRole: "artifactId"
-                Accessible.name: page.vwaTr("任务中的调音工程")
-                function syncChoice() {
-                    if (count > 0)
-                        currentIndex = 0
-                    taskPickerDialog.artifactId = count > 0
-                        ? String(taskPickerDialog.projectRows[0].artifactId) : ""
-                }
-                onActivated: function(index) {
-                    if (index >= 0 && index < taskPickerDialog.projectRows.length)
-                        taskPickerDialog.artifactId = String(taskPickerDialog.projectRows[index].artifactId)
-                }
-                onCountChanged: syncChoice()
-                onModelChanged: syncChoice()
-            }
-            HelperText {
-                Layout.fillWidth: true
-                theme: page.theme
-                text: page.vwaTr("载入前会按任务与结果页面的同一文件清单重新核验路径、SHA 和上游版本；变更后会拒绝载入。")
-            }
-        }
-
-        footer: RowLayout {
-            spacing: Math.round(7 * page.scale)
-            Item { Layout.fillWidth: true }
-            UiButton {
-                theme: page.theme
-                text: page.vwaTr("取消")
-                quiet: true
-                onClicked: taskPickerDialog.close()
-            }
-            UiButton {
-                objectName: "loadTuningTaskProject"
-                theme: page.theme
-                text: page.vwaTr("核验并载入")
-                primary: true
-                enabled: !page.busy && taskPickerDialog.jobId.length > 0
-                    && taskPickerDialog.artifactId.length > 0
-                onClicked: {
-                    page.controller.loadTuningTaskArtifact(taskPickerDialog.jobId, taskPickerDialog.artifactId)
-                    taskPickerDialog.close()
-                }
-            }
-        }
-    }
-
-    FileDialog {
-        id: referenceDialog
-        objectName: "tuningReferenceDialog"
-        property string trackId: ""
-        title: page.vwaTr("绑定参考演唱音频")
-        fileMode: FileDialog.OpenFile
-        nameFilters: [
-            page.vwaTr("音频文件 (*.wav *.flac *.mp3 *.m4a *.ogg *.aac *.opus)"),
-            page.vwaTr("所有文件 (*)")
-        ]
-        onAccepted: page.controller.bindReference(trackId, selectedFile)
-    }
-
-    FileDialog {
-        id: calibrationDialog
-        objectName: "tuningCalibrationDialog"
-        title: page.vwaTr("绑定校准配置")
-        fileMode: FileDialog.OpenFile
-        nameFilters: [
-            page.vwaTr("校准配置 (*.json)"),
-            page.vwaTr("所有文件 (*)")
-        ]
-        onAccepted: page.controller.bindCalibration(selectedFile)
-    }
-
-    FileDialog {
-        id: retainedDialog
-        objectName: "tuningRetainedDialog"
-        property string trackId: ""
-        property int sourceTrackIndex: 0
-        readonly property string suffix: page.textOf(page.view.projectSuffix) || "svp"
-        title: page.vwaTr("绑定原参数工程")
-        fileMode: FileDialog.OpenFile
-        nameFilters: [
-            suffix.toUpperCase() + " (*." + suffix + ")",
-            page.vwaTr("所有文件 (*)")
-        ]
-        onAccepted: page.controller.bindRetained(trackId, selectedFile, sourceTrackIndex)
-    }
-
-    FileDialog {
-        id: presetImportDialog
-        objectName: "tuningPresetImportDialog"
-        title: page.vwaTr("导入附加调音预设")
-        fileMode: FileDialog.OpenFile
-        nameFilters: [
-            page.vwaTr("调音预设 (*.json)"),
-            page.vwaTr("所有文件 (*)")
-        ]
-        onAccepted: page.controller.importPresets(selectedFile)
-    }
-
-    FileDialog {
-        id: presetExportDialog
-        objectName: "tuningPresetExportDialog"
-        title: page.vwaTr("导出调音预设")
-        fileMode: FileDialog.SaveFile
-        nameFilters: [
-            page.vwaTr("调音预设 (*.json)"),
-            page.vwaTr("所有文件 (*)")
-        ]
-        onAccepted: {
-            if (page.selectedPresetKey.length > 0)
-                page.controller.exportPreset(selectedFile, page.selectedPresetKey)
-        }
-    }
-
-    Dialog {
-        id: presetNameDialog
-        objectName: "tuningPresetNameDialog"
-        title: page.vwaTr("保存到本机预设库")
-        parent: Overlay.overlay
-        modal: true
-        focus: true
-        closePolicy: Popup.CloseOnEscape
-        x: parent ? Math.max(18, (parent.width - width) / 2) : 18
-        y: parent ? Math.max(18, (parent.height - height) / 2) : 18
-        width: Math.min(parent ? parent.width - 36 : 420, Math.round(430 * page.scale))
-        padding: Math.round(18 * page.scale)
-
-        contentItem: ColumnLayout {
-            spacing: Math.round(8 * page.scale)
-            Text {
-                Layout.fillWidth: true
-                text: page.vwaTr("预设名称")
-                color: page.theme.text
-                font.pixelSize: Math.round(12 * page.scale)
-                font.weight: Font.DemiBold
-                textFormat: Text.PlainText
-            }
-            ThemedTextField {
-                id: presetNameField
-                Layout.fillWidth: true
-                theme: page.theme
-                placeholderText: page.vwaTr("例如：主唱轻推 · 当前工程")
-                Accessible.name: page.vwaTr("调音预设名称")
-            }
-            HelperText {
-                Layout.fillWidth: true
-                theme: page.theme
-                text: page.vwaTr("名称只用于当前明确的保存或导出操作；工程、音频和声库绑定仍保留在本机。")
-            }
-        }
-
-        footer: RowLayout {
-            spacing: Math.round(7 * page.scale)
-            Item { Layout.fillWidth: true }
-            UiButton {
-                theme: page.theme
-                text: page.vwaTr("取消")
-                quiet: true
-                onClicked: presetNameDialog.close()
-            }
-            UiButton {
-                theme: page.theme
-                text: page.vwaTr("保存")
-                primary: true
-                enabled: presetNameField.text.trim().length > 0 && !page.busy
-                onClicked: {
-                    page.controller.savePreset(presetNameField.text.trim())
-                    presetNameDialog.close()
-                }
-            }
-        }
+    TuningDialogs {
+        id: tuningDialogs
+        page: page
     }
 }

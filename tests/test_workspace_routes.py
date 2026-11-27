@@ -25,13 +25,14 @@ expected = {
     'audio_mixdown': (10, None, None),
     'tuning_workshop': (11, None, None),
     'chorus': (12, None, None),
+    'project_convert': (13, None, None),
 }
 actual = {
     spec.page_id: (spec.legacy_index, spec.target, spec.focus_step)
     for spec in workspace_routes.PAGE_SPECS
 }
 assert actual == expected
-assert [spec.legacy_index for spec in workspace_routes.PAGE_SPECS] == list(range(13))
+assert [spec.legacy_index for spec in workspace_routes.PAGE_SPECS] == list(range(14))
 orders = [spec.sidebar_order for spec in workspace_routes.PAGE_SPECS
           if spec.sidebar_order is not None]
 assert len(orders) == len(set(orders))

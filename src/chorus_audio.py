@@ -265,7 +265,56 @@ def compile_pitch_spans(regions, rate, size, samples=None, *, voiced_curve=None)
             cursor = max(cursor, end) if cursor is not None else end
         edges = np.pad(shift, (window // 2, (window - 1) // 2), mode='edge')
         prefix = np.r_[0., np.cumsum(edges)]
-        shift = (prefix[window:] - prefix[:-window]) / window
+        smoothed = (prefix[window:] - prefix[:-window]) / window
+        # Adaptive legato S-curve smoothing ONLY at shift-step boundaries
+        # (|Δshift| > 0.70 st). Splits with Δshift == 0 skip this path completely,
+        # preserving bit-exact split invariance while making melisma turns silky.
+        if len(shift) > window:
+            diffs = np.abs(np.diff(shift))
+            jump_idx = np.flatnonzero(diffs > .70)
+            if len(jump_idx):
+                # Merge nearby step indices belonging to the same transition edge.
+                clusters = []
+                for pos in jump_idx:
+                    if not clusters or pos - clusters[-1][1] > max(4, window // 3):
+                        clusters.append([int(pos), int(pos), float(diffs[pos])])
+                    else:
+                        clusters[-1][1] = int(pos)
+                        clusters[-1][2] = max(clusters[-1][2], float(diffs[pos]))
+                for idx_c, (c_a, c_b, jump) in enumerate(clusters):
+                    center = (c_a + c_b) // 2
+                    left_val = float(shift[max(0, c_a)])
+                    right_val = float(shift[min(len(shift) - 1, c_b + 1)])
+                    opposing = (left_val * right_val < -0.04)
+                    # Widen S-curve smoothly up to 95 ms on large opposing shift reversals (>=1.3 st)
+                    # or >=1.8 st jumps while capping to 65% of neighbor spacing so short notes keep center.
+                    if opposing and jump >= 1.3:
+                        target_ms = min(.095, .048 + .024 * (jump - 1.3))
+                    elif jump >= 1.8:
+                        target_ms = min(.090, .050 + .022 * (jump - 1.8))
+                    else:
+                        target_ms = min(.075, PITCH_SMOOTH_S + .020 * (jump - .70))
+                    prev_edge = clusters[idx_c - 1][1] if idx_c > 0 else 0
+                    next_edge = clusters[idx_c + 1][0] if idx_c + 1 < len(clusters) else len(smoothed) - 1
+                    max_half = max(window // 2 + 1, int(.65 * min(center - prev_edge, next_edge - center)))
+                    wide = min(max(window + 2, round(target_ms * rate)), max(window + 2, 2 * max_half + 1))
+                    if wide % 2 == 0:
+                        wide += 1
+                    half = wide // 2
+                    seg_a = max(0, center - half)
+                    seg_b = min(len(smoothed), center + half + 1)
+                    if seg_b - seg_a < 5:
+                        continue
+                    # Smooth local neighborhood with raised-cosine kernel & blend edges cleanly.
+                    local_pad = np.pad(smoothed[seg_a:seg_b], (half, half), mode='edge')
+                    t_k = np.linspace(-1., 1., wide, dtype=np.float64)
+                    k = .5 * (1. + np.cos(np.pi * t_k))
+                    k /= k.sum()
+                    blurred = np.convolve(local_pad, k, mode='valid')[:seg_b - seg_a]
+                    n_loc = seg_b - seg_a
+                    blend = np.sin(np.pi * np.arange(n_loc, dtype=np.float64) / max(1, n_loc - 1)) ** 2
+                    smoothed[seg_a:seg_b] = smoothed[seg_a:seg_b] * (1. - blend) + blurred * blend
+        shift = smoothed
         compiled.append((span_start, span_end, left, right, shift))
     return tuple(compiled)
 
@@ -291,7 +340,7 @@ def compiled_pitch_semitones(regions, times, *, duration, voiced_curve=None, sam
 def _shift_pitch(samples, rate, regions, check, *, engine='auto'):
     from chorus_cache import load_pitch_span, save_pitch_span, span_cache_key
     from chorus_pitch_dsp import (
-        blend_pitch, preserve_level, render_continuous_pitch,
+        blend_pitch, bypass_unvoiced_sibilants, preserve_level, render_continuous_pitch,
         resolve_pitch_engine, signalsmith_dll_path,
     )
 
@@ -299,7 +348,7 @@ def _shift_pitch(samples, rate, regions, check, *, engine='auto'):
     if not spans:
         return
     resolved_engine = resolve_pitch_engine(engine)
-    engine_tag = f'{engine}->{resolved_engine}'
+    engine_tag = f'{engine}->{resolved_engine}:vocal-v2'
     if resolved_engine == 'signalsmith':
         dll = signalsmith_dll_path()
         if dll is not None:
@@ -332,6 +381,7 @@ def _shift_pitch(samples, rate, regions, check, *, engine='auto'):
             clip, rate, shift, check, engine=engine, pedalboard_loader=_pedalboard).T
         if edited.shape != dry.shape or not np.isfinite(edited).all():
             raise ValueError('修音组件返回的长度、声道或采样无效。')
+        edited = bypass_unvoiced_sibilants(dry, edited, rate, shift)
         mixed = dry.copy()
         fade = min(round(PITCH_FADE_S * rate), (span_end - span_start) // 2)
         blend_pitch(mixed[interval], edited[interval], fade)
@@ -507,6 +557,85 @@ def _stereo_channels(data):
     return data if data.shape[1] <= 2 else data.mean(axis=1, keepdims=True)
 
 
+def balance_vocal_level(data, *, target_dbfs=-18.0, max_gain_db=9.0, peak_ceiling=.891):
+    """Apply gentle constant macro gain so multi-singer vocal stems start balanced for mixdown.
+
+    Measures active vocal RMS (ignoring silence) and applies one constant linear gain with
+    peak protection — zero dynamic pumping or coloration. Returns `(balanced_data, gain_db)`.
+    """
+    arr = np.asarray(data, dtype=np.float32)
+    if arr.size == 0:
+        return arr, 0.0
+    mono = arr.mean(axis=1) if arr.ndim == 2 else arr
+    abs_m = np.abs(mono)
+    p95 = float(np.percentile(abs_m, 95))
+    if p95 < 1e-4:
+        return arr, 0.0
+    active = mono[abs_m >= max(1e-4, .06 * p95)]
+    if len(active) < 64:
+        return arr, 0.0
+    rms = float(np.sqrt(np.mean(active.astype(np.float64) ** 2)))
+    if rms < 1e-6:
+        return arr, 0.0
+    cur_dbfs = 20.0 * float(np.log10(rms))
+    gain_db = max(-max_gain_db, min(max_gain_db, target_dbfs - cur_dbfs))
+    gain = float(10.0 ** (gain_db / 20.0))
+    peak = float(np.max(np.abs(arr)))
+    if peak * gain > peak_ceiling and peak > 1e-6:
+        gain = peak_ceiling / peak
+        gain_db = 20.0 * float(np.log10(max(gain, 1e-6)))
+    if abs(gain_db) < .25:
+        return arr, 0.0
+    return np.ascontiguousarray(arr * np.float32(gain), dtype=np.float32), round(gain_db, 2)
+
+
+def render_score_guide(project, track=None, *, gain_db=-14.0):
+    """Synthesize a soft monitor-only electric-piano MIDI reference track (never exported)."""
+    from chorus_score_match import shift_score_notes
+
+    frames = project.frames
+    rate = project.rate
+    if frames <= 0 or not project.score or not project.score.lanes:
+        return np.zeros((max(0, frames), 2), dtype=np.float32)
+    lane = None
+    octave = 0
+    if track is not None and track.score_lane:
+        lane = next((item for item in project.score.lanes if item.id == track.score_lane), None)
+        octave = int(track.score_octave or 0)
+    if lane is None:
+        lane = project.score.lanes[0]
+    notes = shift_score_notes(lane.notes, offset=project.score.offset, octave_semitones=octave)
+    mono = np.zeros(frames, dtype=np.float32)
+    origin = project.first_frame
+    amp = float(10.0 ** (gain_db / 20.0)) * .34
+    attack_n = max(1, round(.008 * rate))
+    release_n = max(1, round(.018 * rate))
+    two_pi = 2.0 * np.pi
+    for note in notes:
+        a = max(0, round(note.start * rate) - origin)
+        b = min(frames, round(note.end * rate) - origin)
+        n = b - a
+        if n < 16:
+            continue
+        freq = 440.0 * (2.0 ** ((note.pitch - 69.0) / 12.0))
+        t = np.arange(n, dtype=np.float64) / rate
+        wave = (np.sin(two_pi * freq * t)
+                + .22 * np.sin(two_pi * 2.0 * freq * t)
+                + .06 * np.sin(two_pi * 3.0 * freq * t))
+        env = np.exp(-t / .70)
+        att = min(attack_n, n // 2)
+        rel = min(release_n, n - att)
+        if att > 0:
+            env[:att] *= .5 - .5 * np.cos(np.pi * np.arange(att) / att)
+        if rel > 0:
+            env[-rel:] *= .5 + .5 * np.cos(np.pi * np.arange(rel) / rel)
+        mono[a:b] += (wave * env * amp).astype(np.float32)
+    peak = float(np.max(np.abs(mono), initial=0.))
+    if peak > .45:
+        mono *= .45 / peak
+    return np.column_stack((mono, mono)).astype(np.float32)
+
+
 def render_mix(project, variant, solo, check, progress):
     rows = monitor_tracks(project, solo)
     stereo = np.zeros((project.frames, 2), dtype=np.float32)
@@ -566,7 +695,8 @@ def _render_process(request):
 
     if spec.get('export'):
         destination, receipt = export_stems(project, spec['folder'], spec['variant'], spec['selection'],
-                                           lambda: None, progress, include_mix=spec['include_mix'])
+                                           lambda: None, progress, include_mix=spec['include_mix'],
+                                           balance_vocals=bool(spec.get('balance_vocals', False)))
         (request.parent / 'export.json').write_text(json.dumps({'folder': destination.name, 'receipt': receipt},
                                                                 ensure_ascii=False), encoding='utf-8')
     else:
@@ -592,7 +722,8 @@ def _publish_stems(stage, folder, title):
         number += 1
 
 
-def export_delivery(project, folder, variant, selection, cache, check, progress, *, include_mix=False):
+def export_delivery(project, folder, variant, selection, cache, check, progress, *,
+                    include_mix=False, balance_vocals=False):
     """Render delivery in a child process so the desktop stays responsive."""
     from chorus_model_worker import model_batch
 
@@ -601,13 +732,14 @@ def export_delivery(project, folder, variant, selection, cache, check, progress,
     if include_mix:
         rows.append('合唱干声')
     if variant == 'original':
-        return export_stems(project, folder, variant, selection, check, progress, include_mix=include_mix)
+        return export_stems(project, folder, variant, selection, check, progress,
+                            include_mix=include_mix, balance_vocals=balance_vocals)
     # The parent owns this directory. Cancellation removes everything here
     # even if the render process was terminated while writing a stem.
     with TemporaryDirectory(dir=folder, prefix='.vwa-delivery-') as directory:
         stage = Path(directory).resolve()
         spec = _render_spec(project, variant, export=True, folder=str(stage), selection=selection,
-                            include_mix=include_mix)
+                            include_mix=include_mix, balance_vocals=bool(balance_vocals))
         with model_batch(__file__, spec, cache, check, lambda i, text: progress(i, len(rows), text), rows,
                          '分轨渲染失败') as worker:
             result = json.loads((worker / 'export.json').read_text(encoding='utf-8'))
@@ -618,7 +750,8 @@ def export_delivery(project, folder, variant, selection, cache, check, progress,
         return _publish_stems(source, folder, project.title), result['receipt']
 
 
-def export_stems(project, folder, variant, selection, check, progress, *, include_mix=False):
+def export_stems(project, folder, variant, selection, check, progress, *,
+                 include_mix=False, balance_vocals=False):
     """Publish only the completed directory, without replacing an export."""
     folder = Path(folder).expanduser().resolve(strict=True)
     if not folder.is_dir():
@@ -634,7 +767,8 @@ def export_stems(project, folder, variant, selection, check, progress, *, includ
     total = len(rows) + int(include_mix)
     receipt = {'schema': 'vwa-chorus-stems/1', 'project': project.id, 'title': project.title,
                'variant': variant, 'sample_rate': project.rate, 'origin_frame': first,
-               'origin_seconds': first / project.rate, 'frames': stop - start, 'tracks': []}
+               'origin_seconds': first / project.rate, 'frames': stop - start,
+               'balance_vocals': bool(balance_vocals), 'tracks': []}
     with TemporaryDirectory(dir=folder, prefix='.vwa-chorus-') as scratch:
         stage = Path(scratch) / 'stems'
         stage.mkdir()
@@ -643,6 +777,9 @@ def export_stems(project, folder, variant, selection, check, progress, *, includ
             check()
             progress(index - 1, total, track.name)
             data = render_track(project, track, variant, check)[start:stop]
+            balance_gain_db = 0.0
+            if balance_vocals:
+                data, balance_gain_db = balance_vocal_level(data)
             filename = f'{index:02d} {_stem_name(track.name)}.wav'
             destination = stage / filename
             sf.write(destination, data, project.rate, format='WAV', subtype='FLOAT')
@@ -654,6 +791,7 @@ def export_stems(project, folder, variant, selection, check, progress, *, includ
             receipt['tracks'].append({'id': track.id, 'name': track.name, 'part': track.part,
                                       'source_sha256': track.sha, 'file': filename,
                                       'channels': track.channels, 'sha256': source_digest(destination),
+                                      'balance_gain_db': balance_gain_db,
                                       'timing_edits': len(project.edits_for(track.id, 'timing')),
                                       'pitch_edits': len(project.edits_for(track.id, 'pitch')),
                                       'gain_edits': len(project.edits_for(track.id, 'gain')),
@@ -739,7 +877,8 @@ def prepare_mixdown_handoff(project, destination, receipt, selection, check, *, 
     }
 
 
-def export_mixdown_handoff(project, folder, variant, selection, cache, check, progress, *, merged_vocals=False):
+def export_mixdown_handoff(project, folder, variant, selection, cache, check, progress, *,
+                           merged_vocals=False, balance_vocals=True):
     """Render chorus stems and build a ready-to-load payload for Simple Mixdown."""
     from mixdown_contract import MAX_VOCALS
 
@@ -751,7 +890,8 @@ def export_mixdown_handoff(project, folder, variant, selection, cache, check, pr
     folder = Path(folder).expanduser().resolve()
     folder.mkdir(parents=True, exist_ok=True)
     destination, receipt = export_delivery(
-        project, folder, variant, selection, cache, check, progress, include_mix=bool(merged_vocals))
+        project, folder, variant, selection, cache, check, progress,
+        include_mix=bool(merged_vocals), balance_vocals=bool(balance_vocals))
     return prepare_mixdown_handoff(project, destination, receipt, selection, check, merged_vocals=bool(merged_vocals))
 
 

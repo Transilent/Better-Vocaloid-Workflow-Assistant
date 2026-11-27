@@ -41,13 +41,11 @@ REQUIRED_NOTE_FIELDS = (
 MONOPHONIC_SCOPE_FIELDS = ("track_index", "channel")
 
 
+from agent_primitives import finite_number
+
+
 def _finite_number(value: Any, field_name: str) -> int | float:
-    if type(value) not in (int, float):
-        raise ValueError(f"{field_name} 必须是有限数值；布尔值不算数值。")
-    number = float(value)
-    if not math.isfinite(number):
-        raise ValueError(f"{field_name} 必须是有限数值。")
-    return int(value) if type(value) is int else number
+    return finite_number(value, field_name, preserve_int=True, bool_note=True)
 
 
 def _integer(

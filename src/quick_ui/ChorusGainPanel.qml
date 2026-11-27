@@ -137,9 +137,11 @@ ColumnLayout {
                 ToolTip.text: panel.t("原录音实测 %1 dBFS").replace("%1", syllable.row.level.toFixed(1))
                 onClicked: panel.controller.seek(syllable.row.time)
             }
-            Slider {
+            UiSlider {
                 id: slider
                 objectName: "chorusSyllableGain-" + syllable.index
+                theme: panel.theme
+                compact: true
                 Layout.fillWidth: true
                 from: 0
                 to: syllable.row.limit

@@ -49,7 +49,7 @@ def _save_state(root, feature, spec, failed_files):
     state = {'schema': 1, 'revision': spec.get('revision'), 'failed_files': failed_files}
     folder = _state_parent(root)
     folder.mkdir(parents=True, exist_ok=True)
-    from task_store import checked_tree
+    from vwa_io import checked_tree
     checked_tree(folder, Path(root).resolve())
     atomic_json(_state_path(root, feature), state)
 
@@ -297,8 +297,8 @@ def install(feature, progress, check=None, source='auto'):
     """
     from optional_components import download
     from download_sources import normalize_component_source
-    from pipeline import job_lock
-    from task_store import checked_tree
+    from process_control import job_lock
+    from vwa_io import checked_tree
 
     root = Path(ROOT).resolve()
     spec, items = _validated(feature, root)

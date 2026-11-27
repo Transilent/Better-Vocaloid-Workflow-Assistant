@@ -560,7 +560,7 @@ def _write_step_grid(original, grid, values, baseline, default):
 def apply_manual_pitch(original, dest, _format, spans, *, cancel):
     """Compose in cents and quantize back to PIT at the unchanged local PBS."""
     import numpy as np
-    from tuning_pitch_layer import CAPACITY, PROTECTED, mix_pitch_samples, pitch_tick_grid
+    from tuning_pitch_math import CAPACITY, PROTECTED, mix_pitch_samples, pitch_tick_grid
 
     idx, styled = _curve(dest, PIT)
     _, base = _curve(original, PIT)
@@ -592,7 +592,7 @@ def apply_manual_pitch(original, dest, _format, spans, *, cancel):
 
 
 def process_project(data, options, *, cancel=lambda: None, progress=lambda text: None, layout=None):
-    from tuning_engine import VERSION, StyleTargets, _has_incomplete, apply_style_plan, digest, settings
+    from tuning_plan_core import VERSION, StyleTargets, _has_incomplete, apply_style_plan, digest, settings
 
     options = settings(options)
     layout = layout or Layout(data)

@@ -1,6 +1,6 @@
 # Contributing
 
-[中文贡献规范](CONTRIBUTING.zh-CN.md) · [Feedback and support](.github/SUPPORT.md)
+[中文贡献规范](CONTRIBUTING.zh-CN.md) · [Developer Guide (ZH)](docs/DeveloperGuide.zh-CN.md) · [AMD GPU Guide (ZH)](docs/AmdGpuAdaptation.zh-CN.md) · [Feedback and support](.github/SUPPORT.md)
 
 Chinese, English and Japanese are welcome in issues and pull requests.
 
@@ -28,18 +28,39 @@ Use `type(scope): concise result` for PR titles and commit subjects. The scope i
 
 ## Development
 
-Edit application code in `src/` and build metadata in `packaging/`. Register new source/distribution files in the relevant `packaging/source-files.json` and `packaging/portable-files.json` manifests; register executable regression scripts in `tests/run_tests.py`. Run `tools/Prepare-Source.ps1` after source edits to refresh the ignored development files in the checkout root. Do not hand-edit or commit those generated copies.
+See the [Developer Guide (ZH)](docs/DeveloperGuide.zh-CN.md) for full onboarding and the [AMD GPU Adaptation Guide (ZH)](docs/AmdGpuAdaptation.zh-CN.md) if working on Radeon / DirectML / ROCm backends.
 
-Use a prepared development runtime; GitHub source archives are not complete installations. `tools/Start-Diagnostics.bat` starts diagnostics and writes a log; it does not install the runtime. See the [portable guide](docs/Portable.en.md) for runtime/package details. Run `tests/run_tests.py` with the project Python and select affected registered scripts using `BVWA_TEST_SELECTION`. The runner isolates state; do not point ad hoc tests at your personal projects or account folders. Inference weights and browser binaries are excluded from Git.
+Edit application code in `src/`, native C/C++ audio libraries in `src/native/` (built via `CMakeLists.txt` + `CMakePresets.json` and verified with `ctest`), and build metadata in `packaging/`. Register new source/distribution files in both `packaging/source-files.json` and `packaging/portable-files.json` (and new `docs/*.md` files in `packaging/source-files.json`); register executable regression scripts in `tests/run_tests.py`. Run `tools/Prepare-Source.ps1` after source edits to refresh the ignored development files in the checkout root. Do not hand-edit or commit those generated copies.
 
-For example, with the project runtime already available:
+Before opening a PR, run the CI-aligned local checks (`.github/workflows/ci.yml`):
+
+```powershell
+& ./tools/Prepare-Source.ps1
+python -B tools/verify_source_layout.py
+ruff check src tools tests
+python -B tools/extract_i18n.py --check --max-missing-en 0 --max-missing-ja 0
+$env:VWA_TESTING = '1'; $env:BVWA_TESTING = '1'
+python -B tests/test_source_layout.py
+python -B tests/test_architecture_guards.py
+python -B tests/test_tier1_infra.py
+python -B tests/test_tier2_infra.py
+python -B tests/test_tier3_ux.py
+```
+
+Key enforced guardrails:
+- **Zero circular imports**: Tarjan full-graph `SCC == 0` across `src/*.py`, and zero Qt imports in domain/DSP modules.
+- **File-size ratchet**: new `src/*.py` and `src/quick_ui/*.qml` files must stay `<= 800` lines; existing legacy files may not exceed their ceiling in `tests/test_architecture_guards.py`.
+- **100% EN/JA i18n coverage**: any new Chinese UI string must be translated in `assets/i18n/additions.json`.
+- **No silent exception swallowing**: bare `except:` and `except Exception: pass` are rejected.
+
+Use a prepared development runtime for Qt 6 UI / inference checks; GitHub source archives are not complete installations. `tools/Start-Diagnostics.bat` starts diagnostics and writes a log; it does not install the runtime. See the [portable guide](docs/Portable.en.md) for runtime/package details. Run `tests/run_tests.py` with the project Python and select affected registered scripts using `BVWA_TEST_SELECTION`. The runner isolates state; do not point ad hoc tests at your personal projects or account folders. Inference weights and browser binaries are excluded from Git.
 
 ```powershell
 & ./tools/Prepare-Source.ps1
 $projectPython = 'C:/path/to/development-runtime/python.exe'
 $previousSelection = $env:BVWA_TEST_SELECTION
 try {
-    $env:BVWA_TEST_SELECTION = 'test_source_layout.py'
+    $env:BVWA_TEST_SELECTION = 'test_source_layout.py,test_quick_desktop.py'
     & $projectPython -B tests/run_tests.py
 } finally {
     $env:BVWA_TEST_SELECTION = $previousSelection

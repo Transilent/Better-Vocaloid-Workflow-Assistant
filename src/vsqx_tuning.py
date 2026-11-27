@@ -352,7 +352,7 @@ def selected_indices(data, options, *, layout=None):
 
 
 def process_project(data, options, *, cancel=lambda: None, progress=lambda text: None):
-    from tuning_engine import digest
+    from tuning_plan_core import digest
 
     layout = Layout(data)
     sequence, report = vocaloid.process_project(layout.sequence, options, layout=layout, cancel=cancel, progress=progress)

@@ -50,6 +50,18 @@ def project_context(spec):
             'tracks':copy.deepcopy(spec['tracks']),'candidate_origin':copy.deepcopy(spec.get('input_origin'))}
 
 
+def check_targets(data, options, format, *, layout=None):
+    from project_io import style_adapter
+    from tuning_engine import selected_indices
+    from tuning_sources import all_standard_vpr, validate_source
+
+    if adapter := style_adapter(format):
+        indices = adapter.selected_indices(data, {**options, 'expression_mode': 'preserve'}, layout=layout)
+        validate_source(format, options, vpr_standard=format == 'vpr' and all_standard_vpr(data['tracks'], indices))
+        return indices
+    return selected_indices(data, options, layout=layout)
+
+
 def preset_context(binding,spec,options,data):
     if binding is None:return None
     from tuning_preset_documents import plan_application,validate_plan
@@ -57,7 +69,6 @@ def preset_context(binding,spec,options,data):
     checked=validate_plan(copy.deepcopy(binding),project=project)
     if normalize_options(checked['options'])!=options:
         raise ValueError('预设绑定与本次实际调音参数不一致，请重新预览应用。')
-    from tuning_workflow import check_targets
     indices=check_targets(data,options,spec.get('format','svp'))
     mode=options['expression_mode']
     local={'vocal_tracks':indices}

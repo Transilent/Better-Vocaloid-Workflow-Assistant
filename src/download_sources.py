@@ -305,6 +305,18 @@ def _unique(values):
     return list(dict.fromkeys(value for value in values if value))
 
 
+def ranked_download_urls(url, source='auto', *, allow_probe=False, root=None, probe_fn=None):
+    """Return download_urls() re-ranked by Happy Eyeballs 24h mirror health cache."""
+    candidates = download_urls(url, source)
+    if normalize_source(source) != 'auto' or len(candidates) <= 1:
+        return candidates
+    import mirror_probe
+    kwargs = {'allow_probe': bool(allow_probe), 'probe_fn': probe_fn}
+    if root is not None:
+        kwargs['root'] = root
+    return mirror_probe.rank_candidates(candidates, **kwargs)
+
+
 def download_urls(url, source='auto'):
     """Return ordered official/mirror candidates for unauthenticated public files.
 
@@ -469,7 +481,11 @@ def read_small(url, source='auto', limit=2 * 1024**2, opener=direct_urlopen, *, 
             'Accept-Encoding': 'identity',
         })
         try:
-            with opener(request, timeout=timeout) as response:
+            open_call = (
+                (lambda req, timeout: direct_urlopen(req, timeout=timeout, allow_system_proxy=True))
+                if opener is direct_urlopen else opener
+            )
+            with open_call(request, timeout=timeout) as response:
                 declared = response.headers.get('Content-Length')
                 if declared:
                     try:

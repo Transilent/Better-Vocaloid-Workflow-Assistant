@@ -7,6 +7,7 @@ Button {
     property bool selected: false
     property bool primary: false
     property bool quiet: false
+    property bool borderlessSelected: false
     property bool leftAligned: false
     property int disclosure: -1   // -1: ordinary action; 0/1: collapsed/expanded.
     // Only familiar operations use a standalone pictogram. text still names
@@ -23,25 +24,46 @@ Button {
     rightPadding: leftPadding
     topPadding: Math.round(7 * theme.scale)
     bottomPadding: topPadding
-    implicitHeight: Math.max(Math.round(36 * theme.scale), implicitContentHeight + topPadding + bottomPadding)
+    implicitHeight: Math.max(Math.round(34 * theme.scale), implicitContentHeight + topPadding + bottomPadding)
     focusPolicy: Qt.StrongFocus
     hoverEnabled: true
     Accessible.name: text
     ToolTip.visible: glyph.length > 0 && (hovered || visualFocus)
     ToolTip.delay: 500
     ToolTip.text: text
+    scale: down && !theme.reduceMotion ? 0.985 : 1.0
+    Behavior on scale {
+        enabled: !control.theme.reduceMotion
+        NumberAnimation { duration: 60; easing.type: Easing.OutCubic }
+    }
 
     background: Rectangle {
-        radius: Math.round(7 * control.theme.scale)
-        color: control.primary ? (control.down ? control.theme.accentPressed : control.theme.accent)
-            : control.selected ? control.theme.selected : control.down ? control.theme.pressed
-            : control.hovered ? control.theme.hover : control.quiet ? "transparent" : control.theme.raised
-        border.width: control.visualFocus ? 2 : control.selected || !control.quiet ? 1 : 0
-        border.color: control.visualFocus ? control.theme.accent : control.selected ? control.theme.selectedLine : control.theme.line
-        opacity: control.enabled ? 1 : 0.55
+        radius: control.theme.radiusMd !== undefined ? control.theme.radiusMd : Math.round(8 * control.theme.scale)
+        color: !control.enabled && control.primary ? (control.theme.disabledBg || control.theme.raised)
+            : control.primary ? (control.down ? control.theme.accentPressed : control.hovered ? (control.theme.accentHover || control.theme.accent) : control.theme.accent)
+            : control.selected ? control.theme.selected
+            : control.down ? control.theme.pressed
+            : control.hovered ? control.theme.hover
+            : control.quiet ? "transparent" : control.theme.raised
+        border.width: control.visualFocus ? 2
+            : control.primary ? 0
+            : (control.selected && !control.borderlessSelected) || (!control.quiet && !control.selected) ? 1 : 0
+        border.color: control.visualFocus ? control.theme.accent
+            : control.selected ? control.theme.selectedLine : control.theme.line
+        opacity: control.enabled ? 1 : (control.primary ? 0.72 : 0.55)
         Behavior on color {
             enabled: !control.theme.reduceMotion && !control.down
             ColorAnimation { duration: 100 }
+        }
+        Rectangle {
+            visible: control.enabled && !control.quiet && !control.down && (control.primary || !control.selected)
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.leftMargin: parent.radius
+            anchors.rightMargin: parent.radius
+            height: 1
+            color: control.theme.highlightTop || "transparent"
         }
     }
     contentItem: Item {
@@ -57,8 +79,11 @@ Button {
         implicitHeight: control.glyph.length > 0 ? Math.round(18 * control.theme.scale)
             : (hasLeading && control.stackedIcon ? leadingSize + Math.round(2 * control.theme.scale) + label.implicitHeight
                 : Math.max(label.implicitHeight, hasLeading ? leadingSize : 0))
-        readonly property color ink: control.primary ? control.theme.onAccent : control.theme.text
-        readonly property color leadingInk: control.primary ? control.theme.onAccent
+        readonly property color ink: (control.primary && control.enabled)
+            ? (control.theme.accentInk !== undefined ? control.theme.accentInk : (control.theme.dark ? "#141022" : "#ffffff"))
+            : control.theme.text
+        readonly property color leadingInk: (control.primary && control.enabled)
+            ? (control.theme.accentInk !== undefined ? control.theme.accentInk : (control.theme.dark ? "#141022" : "#ffffff"))
             : control.selected ? control.theme.accent
             : control.hovered ? control.theme.text : control.theme.muted
         opacity: control.enabled ? 1 : 0.45
