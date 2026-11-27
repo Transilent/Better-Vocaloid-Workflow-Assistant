@@ -46723,18 +46723,18 @@
     },
     {
       "file": "dependencies/vocal2midi2/inference/API/asr_api.py",
-      "bytes": 27620,
-      "sha256": "e5e11d6e2ffc53ad2182ca16c390520cb1b95f6cae940d37c0d4291d05843f5c"
+      "bytes": 27412,
+      "sha256": "17992cc4986308eb886093299cfa3f47be691033f57d913d843eb12106b81fd5"
     },
     {
       "file": "dependencies/vocal2midi2/inference/API/game_api.py",
-      "bytes": 20970,
-      "sha256": "736a02de62a3de23221e5f1bed0ff500a540815e3388c7588699bf8065fbc861"
+      "bytes": 20815,
+      "sha256": "9dad31dc1db0a4426c1bdaea4f4bac1f58337707335015157853df1e289daf36"
     },
     {
       "file": "dependencies/vocal2midi2/inference/API/hfa_api.py",
-      "bytes": 9614,
-      "sha256": "15f276f8f1a77746033346f0b922d4d3781ec997f4126cccceb22d69b1db04b7"
+      "bytes": 9487,
+      "sha256": "ff6537481f94d1aeed000bf9b42ef1343ee060f16e778d6fcaacb7e98ce4fb84"
     },
     {
       "file": "dependencies/vocal2midi2/inference/API/lfa_api.py",
@@ -46743,8 +46743,8 @@
     },
     {
       "file": "dependencies/vocal2midi2/inference/API/rmvpe_api.py",
-      "bytes": 11723,
-      "sha256": "b709c4e8923a4515e5f215a61b764a0dad70f264d10d7f9405c8eb15f89fa91c"
+      "bytes": 12530,
+      "sha256": "7186c14d1e6c29c65cce7e855ec453337ae1da3a9ab2626cd4b135ce78a263ed"
     },
     {
       "file": "dependencies/vocal2midi2/inference/API/slicer_api.py",
@@ -46768,8 +46768,8 @@
     },
     {
       "file": "dependencies/vocal2midi2/inference/HubertFA/onnx_infer.py",
-      "bytes": 4578,
-      "sha256": "5eedf915512f1ced4451f71ca61c9ef273c8480a90a90395390c0f3b9b0221c8"
+      "bytes": 4598,
+      "sha256": "76bc7c27720fd4074107a6683a0e08dc2bfc3fd306f980429785225b1361b245"
     },
     {
       "file": "dependencies/vocal2midi2/inference/HubertFA/tools/__init__.py",
@@ -47133,8 +47133,8 @@
     },
     {
       "file": "dependencies/vocal2midi2/inference/TiFA/runtime.py",
-      "bytes": 3040,
-      "sha256": "45a4943d496c12d23f9625c6f438ded700448a2cd0852acc777cd94917706fc9"
+      "bytes": 3075,
+      "sha256": "ecfe4bb3f265998d00911500fac43da133c8810edb1cff562d0efb8603b2c6b4"
     },
     {
       "file": "dependencies/vocal2midi2/inference/TiFA/scoring_dp.py",
@@ -47153,8 +47153,8 @@
     },
     {
       "file": "dependencies/vocal2midi2/inference/device_utils.py",
-      "bytes": 8393,
-      "sha256": "a352e011c5f9dc2f82d3eb5ed181cd7b9a68568a0bfdfc1e384fe8afdc3a75c9"
+      "bytes": 16355,
+      "sha256": "a82f80366d46d25e90a131cf2fd5b13b8192b2a346b1d7778572fa9ce735b621"
     },
     {
       "file": "dependencies/vocal2midi2/inference/game/__init__.py",
@@ -47168,13 +47168,13 @@
     },
     {
       "file": "dependencies/vocal2midi2/inference/game/onnx_runtime.py",
-      "bytes": 6184,
-      "sha256": "8264ed0ba5b3d3b959c62b63f8f93f47c1c2e78b39dd4963fdc1dd5d043fa6ae"
+      "bytes": 6545,
+      "sha256": "284895a0b5d0a25582bf28e18e8a7c4838533668b0f4d0376f17141ee09d0477"
     },
     {
       "file": "dependencies/vocal2midi2/inference/io/audio_io.py",
-      "bytes": 4042,
-      "sha256": "1daa213d944210bc804eb7e1acca4527f259340feb6b8f1f0c0bd4ff7d49599e"
+      "bytes": 4041,
+      "sha256": "f72251763358ec9ed98a53df552180a3da97110e2243b4f4ea21a1b48890a71c"
     },
     {
       "file": "dependencies/vocal2midi2/inference/io/note_io.py",
@@ -47193,8 +47193,8 @@
     },
     {
       "file": "dependencies/vocal2midi2/inference/kashi_g2p_ja/g2p_onnx_runtime.py",
-      "bytes": 46608,
-      "sha256": "57256e581e28f51011aa02fad0037b7a877c6df294bb265db843fdbd20b9e6c8"
+      "bytes": 46758,
+      "sha256": "4bcd580bea29dcde94f95c0a1d7cade4cba2af05346484dbbe995396185a1b50"
     },
     {
       "file": "dependencies/vocal2midi2/inference/pinyin_asr/__init__.py",
@@ -47203,18 +47203,18 @@
     },
     {
       "file": "dependencies/vocal2midi2/inference/pinyin_asr/runtime.py",
-      "bytes": 5355,
-      "sha256": "546eb98a3fc3bde4bfce36ac5310ad38e04dc7730cbc6826e9d4213666ac4aff"
+      "bytes": 5584,
+      "sha256": "2d906fb27d9bcb593645ee702b19049eaa78066164ad8da8165452a034d48d6e"
     },
     {
       "file": "dependencies/vocal2midi2/inference/pipeline/auto_lyric_hybrid.py",
-      "bytes": 17187,
-      "sha256": "3a523a51c326a0c6dfc403d44155a630df9a2bb913fa5dde7bbecd041d4f96b6"
+      "bytes": 16682,
+      "sha256": "63e3470e41ef626ac85a33eea2a7e36f30eb47b3d11e7783e35a222e283c2494"
     },
     {
       "file": "dependencies/vocal2midi2/inference/pipeline/lyric_alignment.py",
-      "bytes": 16801,
-      "sha256": "28b06dcafa810c9ac5e6d677435062af55bf0ff84c620216a1cc27003955e420"
+      "bytes": 16699,
+      "sha256": "cf3d17e5291591b0a8843a8b12c4723a2545415fd3abaa17cdbf895d79be9e2d"
     },
     {
       "file": "dependencies/vocal2midi2/inference/pipeline/memory_utils.py",
@@ -47253,8 +47253,8 @@
     },
     {
       "file": "dependencies/vocal2midi2/inference/qwen3asr_dml/encoder.py",
-      "bytes": 10882,
-      "sha256": "f2c160dee6fdcee37f6d4b8eaef790fcfb70f1927f47c9bb2698e4515ac15bbb"
+      "bytes": 10980,
+      "sha256": "c06d4b8eb0311a882c50a62ecd327ecbaa24180aef3c3d3527147926c97eea94"
     },
     {
       "file": "dependencies/vocal2midi2/inference/qwen3asr_dml/gguf/__init__.py",
@@ -47318,13 +47318,13 @@
     },
     {
       "file": "dependencies/vocal2midi2/inference/qwen3asr_dml/onnx_runtime.py",
-      "bytes": 10512,
-      "sha256": "25c9a7778bd8d39fe920468532c9f282e9479bb91667a8f902db5a47e9e53361"
+      "bytes": 10967,
+      "sha256": "1eb75918f36cf5ac5abc6baa86bb3cd02fac4fbc13acbc93dbe2ead25e0ffb93"
     },
     {
       "file": "dependencies/vocal2midi2/inference/qwen3asr_dml/runtime.py",
-      "bytes": 9192,
-      "sha256": "07d0d3c51a637382029a05755dcb6f463453c7e35281f81f8d378ef51e3805a0"
+      "bytes": 9229,
+      "sha256": "ba17558526a26733c5129e89f9394c38e788c1cabf488f6eaebadc6b1da44b11"
     },
     {
       "file": "dependencies/vocal2midi2/inference/qwen3asr_dml/schema.py",
@@ -47343,18 +47343,18 @@
     },
     {
       "file": "dependencies/vocal2midi2/inference/romaji_asr/common.py",
-      "bytes": 5748,
-      "sha256": "ded06090b31a38fdceaa52cae6c1d53183b2f4805a9f7d1395500d471c64ba44"
+      "bytes": 5783,
+      "sha256": "1f1d081d0fd86c1ba195208d5fae2c3e2e469dc006495d05c452a001e2719c14"
     },
     {
       "file": "dependencies/vocal2midi2/inference/romaji_asr/infer_dml.py",
-      "bytes": 2231,
-      "sha256": "c945e8e1fea589d4d35bff4ca193c810de34a1a4ea303f56bc5d179dbab595cd"
+      "bytes": 2241,
+      "sha256": "c99f6c17a3872704f934c8e21f94681cd483ec9624f21fc9e4a444b8df2d108a"
     },
     {
       "file": "dependencies/vocal2midi2/inference/romaji_asr/runtime.py",
-      "bytes": 4469,
-      "sha256": "6c7b457781f2baee2bdf56232f81d119fa894efe020182325c89b415c03a53f0"
+      "bytes": 4698,
+      "sha256": "f9b0c0a2e20b6b6405c37946876bd942ac217e5edf36cd6df5feafc6c2e0ec5f"
     },
     {
       "file": "dependencies/vocal2midi2/inference/slicer/slicer2.py",
