@@ -412,6 +412,8 @@ def write_release_metadata(report, folder, migration=None, *, full_package_requi
                     })
                 public['runtime_patches'] = verified_patches
         atomic_json(destination, public)
+        from tools.generate_sbom import write_release_supply_chain
+        write_release_supply_chain(ROOT, folder)
         return public
     if isinstance(existing, dict) and 'updates' in existing:
         # Adding portable downloads must not silently replace a verified

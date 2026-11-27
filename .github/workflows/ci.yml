@@ -65,7 +65,8 @@ jobs:
             'tests/test_operation_diagnostics.py',
             'tests/test_project_convert.py',
             'tests/test_updater_and_infra_upgrade.py',
-            'tests/test_tier1_infra.py'
+            'tests/test_tier1_infra.py',
+            'tests/test_tier2_infra.py'
           )
           foreach ($t in $tests) {
             Write-Host "=== Running $t ==="

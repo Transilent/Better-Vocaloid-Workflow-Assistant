@@ -17,7 +17,7 @@ import time
 from typing import Any, Callable
 
 from common import ROOT, native_path
-from process_control import Win32JobObject, terminate_tree
+from worker_runner import run_worker_process
 
 
 @dataclass(frozen=True)
@@ -523,48 +523,14 @@ def _run_worker(
         req_path = Path(tmp) / 'request.json'
         res_path = Path(tmp) / 'response.json'
         req_path.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
-        env = dict(os.environ, PYTHONUTF8='1', PYTHONDONTWRITEBYTECODE='1')
-        proc = subprocess.Popen(
+        result = run_worker_process(
             [sys.executable, '-B', str(worker), command, str(req_path), str(res_path)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            cwd=str(ROOT),
-            env=env,
-            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+            cwd=ROOT,
+            cancel=cancel,
+            timeout=timeout,
+            cancel_message='已取消工程互转操作。',
+            timeout_message='工程互转超时，已自动停止。',
         )
-        deadline = time.monotonic() + timeout
-        with Win32JobObject(kill_on_close=True) as job_obj:
-            job_obj.assign(proc)
-            try:
-                while proc.poll() is None:
-                    if cancel is not None and cancel():
-                        if job_obj.assigned:
-                            job_obj.terminate(1)
-                        else:
-                            terminate_tree(proc)
-                        try:
-                            proc.wait(timeout=3)
-                        except subprocess.TimeoutExpired:
-                            proc.kill()
-                        raise InterruptedError('已取消工程互转操作。')
-                    if time.monotonic() > deadline:
-                        if job_obj.assigned:
-                            job_obj.terminate(1)
-                        else:
-                            terminate_tree(proc)
-                        try:
-                            proc.wait(timeout=3)
-                        except subprocess.TimeoutExpired:
-                            proc.kill()
-                        raise TimeoutError('工程互转超时，已自动停止。')
-                    time.sleep(0.05)
-            finally:
-                if proc.poll() is None:
-                    if job_obj.assigned:
-                        job_obj.terminate(1)
-                    else:
-                        terminate_tree(proc)
-                stdout, stderr = proc.communicate()
 
         if res_path.is_file():
             data = json.loads(res_path.read_text(encoding='utf-8'))
@@ -572,8 +538,8 @@ def _run_worker(
                 return data['result']
             raise ValueError(data.get('error') or '工程互转执行失败。')
 
-        err = (stderr or stdout or b'').decode('utf-8', errors='replace').strip()
-        tail = err.splitlines()[-1] if err else f'退出码 {proc.returncode}'
+        err = (result.stderr or result.stdout or '').strip()
+        tail = err.splitlines()[-1] if err else f'退出码 {result.returncode}'
         raise ValueError(f'工程互转子进程异常：{tail}')
 
 

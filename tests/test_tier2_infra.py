@@ -183,4 +183,61 @@ tp_lines = len((APP / "src/quick_ui/TuningPage.qml").read_text(encoding="utf-8")
 assert sp_lines <= 650, f"SettingsPage.qml regressed: {sp_lines}"
 assert tp_lines <= 1900, f"TuningPage.qml regressed: {tp_lines}"
 
-print("PASS: Tier 2 M2+M3 (vwa_config, SQLite task_index, MiniDump, list_diff, ViewModels, QML split)")
+# --- 5. M4: Unified WorkerRunner, SBOM/SHA256SUMS, Inno Setup/winget & pytest conftest ---
+import threading
+import time as _time
+sys.path.insert(0, str(APP / "tools"))
+import generate_sbom
+import worker_runner
+
+events = []
+res = worker_runner.run_worker_process(
+    [sys.executable, "-B", "-c", 'import json; print(json.dumps({"step": 1, "ok": True}), flush=True)'],
+    on_json_event=events.append,
+    timeout=15.0,
+)
+assert res.returncode == 0
+assert events == [{"step": 1, "ok": True}], events
+
+# Cooperative cancellation via WorkerRunner
+stop_flag = threading.Event()
+threading.Timer(0.15, stop_flag.set).start()
+try:
+    worker_runner.run_worker_process(
+        [sys.executable, "-B", "-c", "import time; time.sleep(30)"],
+        cancel=stop_flag.is_set,
+        timeout=15.0,
+    )
+    raise AssertionError("WorkerRunner did not honor cancellation")
+except InterruptedError:
+    pass
+
+# Timeout hard-kill via WorkerRunner
+try:
+    worker_runner.run_worker_process(
+        [sys.executable, "-B", "-c", "import time; time.sleep(30)"],
+        timeout=0.25,
+    )
+    raise AssertionError("WorkerRunner did not enforce timeout")
+except TimeoutError:
+    pass
+
+# CycloneDX 1.5 SBOM + SHA256SUMS.txt generation
+with tempfile.TemporaryDirectory(dir=APP / "work", prefix="tier2-m4-sbom-") as sbom_tmp:
+    rel_dir = Path(sbom_tmp)
+    (rel_dir / "VWA-Windows-x64.zip").write_bytes(b"fake-portable-archive-payload")
+    out_paths = generate_sbom.write_release_supply_chain(APP, rel_dir)
+    sbom_doc = json.loads(Path(out_paths["sbom"]).read_text(encoding="utf-8"))
+    assert sbom_doc["bomFormat"] == "CycloneDX" and sbom_doc["specVersion"] == "1.5"
+    comp_names = {c["name"] for c in sbom_doc["components"]}
+    assert {"miniaudio", "signalsmith-stretch", "signalsmith-linear", "ffmpeg-alimiter"} <= comp_names
+    sums_text = Path(out_paths["sha256sums"]).read_text(encoding="ascii")
+    assert "VWA-Windows-x64.zip" in sums_text and "sbom.cdx.json" in sums_text
+
+# Installer, winget, signing docs & pytest conftest presence
+assert (APP / "packaging/installer/VWA.iss").is_file()
+assert (APP / "packaging/winget/Transilent.VWA.yaml").is_file()
+assert (APP / "docs/RELEASE_SIGNING.md").is_file()
+assert (APP / "tests/conftest.py").is_file()
+
+print("PASS: Tier 2 M2+M3+M4 (vwa_config, SQLite task_index, MiniDump, list_diff, ViewModels, QML split, WorkerRunner, SBOM/OSS release)")

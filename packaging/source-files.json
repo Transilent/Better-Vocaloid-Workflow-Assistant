@@ -2150,6 +2150,7 @@
     "src/quick_list_model.py",
     "src/chorus_viewmodel.py",
     "src/tuning_viewmodel.py",
+    "src/worker_runner.py",
     "src/quick_ui/SettingsChoiceChip.qml",
     "src/quick_ui/SettingsMotionChoice.qml",
     "src/quick_ui/SettingsDialogs.qml",

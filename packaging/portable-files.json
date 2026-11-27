@@ -1350,6 +1350,10 @@
       "source": "src/tuning_viewmodel.py"
     },
     {
+      "file": "worker_runner.py",
+      "source": "src/worker_runner.py"
+    },
+    {
       "file": "quick_ui/SettingsChoiceChip.qml",
       "source": "src/quick_ui/SettingsChoiceChip.qml"
     },
