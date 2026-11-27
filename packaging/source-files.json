@@ -158,6 +158,7 @@
     "tests/test_chorus_workbench.py",
     "tests/test_chorus_user_journeys.py",
     "tests/test_wave0_shell_journeys.py",
+    "tests/test_wave7_management_journeys.py",
     "tests/test_user_experience_guards.py",
     "tests/test_stability_and_perf_guards.py",
     "tests/test_project_convert.py",

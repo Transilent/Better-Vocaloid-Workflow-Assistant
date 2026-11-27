@@ -5,6 +5,7 @@ import shutil
 from pathlib import Path
 from common import ROOT, job_directories, app_path, file_hash, native_path
 from task_store import size, checked_tree, locked, read_json, format_size
+from vwa_io import rmtree_checked
 
 CACHE_NAMES = (
     'numba', 'browser-temp', 'v2m-temp', 'component-probe', 'qwen-runtime',
@@ -197,7 +198,7 @@ def clean(paths):
         checked.append(row)
     count = 0
     for row in checked:
-        if row['path'].is_dir(): shutil.rmtree(native_path(row['path']))
+        if row['path'].is_dir(): rmtree_checked(row['path'])
         else: row['path'].unlink()
         count += row['bytes']
     return count

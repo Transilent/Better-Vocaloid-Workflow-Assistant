@@ -269,12 +269,11 @@ class QuickSupport(QObject):
             mixdown_view = mixdown.view
             if isinstance(mixdown_view, dict) and mixdown_view.get('busy'):
                 add('简易混音')
-            if isinstance(mixdown_view, dict) and (mixdown_view.get('playing') or mixdown_view.get('loading')):
-                add('简易混音试听')
+            if isinstance(mixdown_view, dict) and (mixdown_view.get('playing') or mixdown_view.get('loading')): add('简易混音试听')
+            preview = getattr(mixdown, '_preview', None)
+            if preview is not None and (getattr(preview, 'play_intent', False) or not hasattr(preview, 'play_intent')): add('简易混音试听会话')
             preview_timer = getattr(mixdown, '_preview_timer', None)
-            if getattr(mixdown, '_preview_pending', False) or (
-                    preview_timer is not None and preview_timer.isActive()):
-                add('简易混音试听准备')
+            if getattr(mixdown, '_preview_pending', False) or (preview_timer is not None and preview_timer.isActive()): add('简易混音试听准备')
         except (AttributeError, RuntimeError, TypeError):
             pass
         try:

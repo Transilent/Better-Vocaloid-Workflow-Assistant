@@ -25,6 +25,9 @@ from vwa_paths import native_path
 _ATOMIC_LOCKS = weakref.WeakValueDictionary()
 _ATOMIC_GUARD = threading.Lock()
 _EXPORT_IMPORT_LOCK = threading.Lock()
+_FILE_HASH_LOCK = threading.Lock()
+_FILE_HASH_CACHE: dict[tuple, str] = {}
+_FILE_HASH_MAX = 2048
 
 
 class SidecarBusy(BlockingIOError):
@@ -148,6 +151,29 @@ def file_hash(path, *, check=None) -> str:
     return digest.hexdigest()
 
 
+def cached_file_hash(path, stat_result=None, *, check=None) -> str:
+    """Stat-fingerprinted SHA-256 cache; invalidates immediately on any file edit."""
+    target = Path(path)
+    st = stat_result if stat_result is not None else target.stat()
+    key = (str(target), st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino)
+    with _FILE_HASH_LOCK:
+        hit = _FILE_HASH_CACHE.get(key)
+    if hit is not None:
+        return hit
+    digest = file_hash(target, check=check)
+    with _FILE_HASH_LOCK:
+        if len(_FILE_HASH_CACHE) >= _FILE_HASH_MAX:
+            for stale_key in list(_FILE_HASH_CACHE.keys())[: _FILE_HASH_MAX // 2]:
+                _FILE_HASH_CACHE.pop(stale_key, None)
+        _FILE_HASH_CACHE[key] = digest
+    return digest
+
+
+def clear_file_hash_cache() -> None:
+    with _FILE_HASH_LOCK:
+        _FILE_HASH_CACHE.clear()
+
+
 def fingerprint(data) -> str:
     return hashlib.sha256(
         json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -251,6 +277,29 @@ def safe_rmtree(path, *, retries: int = 6, base_delay: float = 0.04) -> bool:
                 return False
             time.sleep(min(0.4, base_delay * (2 ** attempt)))
     return not target.exists()
+
+
+def rmtree_checked(path, *, retries: int = 5, base_delay: float = 0.08) -> None:
+    """Remove a directory tree with bounded Windows lock retries, raising if still present."""
+    target = Path(path)
+    if not target.exists():
+        return
+    last_error = None
+    for attempt in range(max(1, int(retries))):
+        try:
+            shutil.rmtree(native_path(target), onerror=_clear_readonly)
+            if not target.exists():
+                return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            last_error = exc
+        if attempt + 1 < retries:
+            time.sleep(min(0.4, base_delay * (2 ** attempt)))
+    if target.exists():
+        if last_error is not None:
+            raise last_error
+        raise OSError(errno.EBUSY, f"无法删除目录（文件正被占用）：{target}")
 
 
 def sweep_stale_tempdirs(parent, prefixes: tuple[str, ...], *, max_age_seconds: float = 900.0) -> int:
