@@ -4,6 +4,7 @@
     "packaging/requirements-quick.lock.txt",
     "tools/bootstrap_webgpu_runtime.py",
     "tools/build_quick_candidate.py",
+    "tools/build_webgpu_portable.py",
     "tools/export_roformer_onnx.py",
     "tools/portable/Start-Quick.bat",
     "src/appearance_state.py",
