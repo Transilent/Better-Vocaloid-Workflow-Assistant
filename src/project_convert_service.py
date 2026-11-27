@@ -17,6 +17,7 @@ import time
 from typing import Any, Callable
 
 from common import ROOT, native_path
+from process_control import Win32JobObject, terminate_tree
 
 
 @dataclass(frozen=True)
@@ -532,21 +533,38 @@ def _run_worker(
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
         )
         deadline = time.monotonic() + timeout
-        try:
-            while proc.poll() is None:
-                if cancel is not None and cancel():
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=3)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                    raise InterruptedError('已取消工程互转操作。')
-                if time.monotonic() > deadline:
-                    proc.kill()
-                    raise TimeoutError('工程互转超时，已自动停止。')
-                time.sleep(0.05)
-        finally:
-            stdout, stderr = proc.communicate()
+        with Win32JobObject(kill_on_close=True) as job_obj:
+            job_obj.assign(proc)
+            try:
+                while proc.poll() is None:
+                    if cancel is not None and cancel():
+                        if job_obj.assigned:
+                            job_obj.terminate(1)
+                        else:
+                            terminate_tree(proc)
+                        try:
+                            proc.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                        raise InterruptedError('已取消工程互转操作。')
+                    if time.monotonic() > deadline:
+                        if job_obj.assigned:
+                            job_obj.terminate(1)
+                        else:
+                            terminate_tree(proc)
+                        try:
+                            proc.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                        raise TimeoutError('工程互转超时，已自动停止。')
+                    time.sleep(0.05)
+            finally:
+                if proc.poll() is None:
+                    if job_obj.assigned:
+                        job_obj.terminate(1)
+                    else:
+                        terminate_tree(proc)
+                stdout, stderr = proc.communicate()
 
         if res_path.is_file():
             data = json.loads(res_path.read_text(encoding='utf-8'))

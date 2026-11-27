@@ -1,0 +1,96 @@
+name: VWA CI (L0 & Native Smoke)
+
+on:
+  push:
+    branches:
+      - main
+      - "dev/**"
+  pull_request:
+    branches:
+      - main
+      - "dev/**"
+  workflow_dispatch:
+
+concurrency:
+  group: vwa-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-and-l0:
+    name: Source Layout, Lint, i18n & L0 Guards
+    runs-on: windows-latest
+    env:
+      PYTHONUTF8: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONNOUSERSITE: "1"
+      VWA_TESTING: "1"
+      BVWA_TESTING: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Ruff linter
+        shell: pwsh
+        run: python -m pip install --upgrade ruff
+
+      - name: Prepare generated source tree
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File tools/Prepare-Source.ps1
+
+      - name: Verify source layout and manifest parity
+        shell: pwsh
+        run: python tools/verify_source_layout.py
+
+      - name: Ruff critical lint (E9/F63/F7/F82)
+        shell: pwsh
+        run: ruff check src tools tests
+
+      - name: Audit i18n catalogs and QML/Python coverage
+        shell: pwsh
+        run: python tools/extract_i18n.py --check --max-missing-en 0 --max-missing-ja 0
+
+      - name: Run L0 pure-Python tests and architecture guards
+        shell: pwsh
+        run: |
+          $tests = @(
+            'tests/test_source_layout.py',
+            'tests/test_architecture_guards.py',
+            'tests/test_i18n.py',
+            'tests/test_download_sources.py',
+            'tests/test_operation_diagnostics.py',
+            'tests/test_project_convert.py',
+            'tests/test_updater_and_infra_upgrade.py',
+            'tests/test_tier1_infra.py'
+          )
+          foreach ($t in $tests) {
+            Write-Host "=== Running $t ==="
+            python -B -u $t
+            if ($LASTEXITCODE -ne 0) {
+              throw "L0 test failed: $t (exit $LASTEXITCODE)"
+            }
+          }
+
+  native-cmake-smoke:
+    name: Native C/C++ CMake Build & CTest
+    runs-on: windows-latest
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || github.event_name == 'push'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure native DLLs and unit test
+        shell: pwsh
+        run: cmake -S src/native -B build/native -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build native targets
+        shell: pwsh
+        run: cmake --build build/native --parallel
+
+      - name: Run CTest null-device audio verification
+        shell: pwsh
+        run: ctest --test-dir build/native --output-on-failure
