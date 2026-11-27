@@ -7,7 +7,7 @@ import json
 import math
 from pathlib import Path
 import re
-import shutil
+from vwa_io import safe_rmtree
 import subprocess
 import tempfile
 from typing import Any, Callable, Mapping
@@ -1000,6 +1000,6 @@ def discard_preview_dir(directory: Path | None, keep: Path | None) -> None:
         if keep_path is not None and directory == keep_path:
             return
         if directory.parent == temp_root and directory.name.startswith('vwa-quick-publication-'):
-            shutil.rmtree(directory, ignore_errors=True)
+            safe_rmtree(directory)
     except (OSError, ValueError):
         pass

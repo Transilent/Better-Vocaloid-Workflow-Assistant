@@ -202,9 +202,9 @@ def prepare(job, video, content, cover_seconds=20, cover_file=None, parent=None,
             original = job / "video/source.mp4" if use_source else Path(info['path'])
             if not original.is_file():
                 raise ValueError("任务中没有原视频；请先完成下载，或选择封面图片。")
-            stamp = publication_file_stamp(original)
+            source_stamp = publication_file_stamp(original)
             cover = extract_cover(original, bundle / "cover.jpg", cover_seconds)
-            if publication_file_stamp(original) != stamp:
+            if publication_file_stamp(original) != source_stamp:
                 raise ValueError('原画面在截图期间已变化，请重试。')
             cover["kind"] = "frame"
             cover["frame_source"] = 'original' if use_source else 'finished'

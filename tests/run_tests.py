@@ -46,6 +46,7 @@ qt6_tests = (
     'test_chorus_user_journeys.py',
     'test_wave0_shell_journeys.py',
     'test_wave7_management_journeys.py',
+    'test_wave5_delivery_journeys.py',
     'test_user_experience_guards.py',
 )
 

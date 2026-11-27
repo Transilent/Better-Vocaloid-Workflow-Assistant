@@ -16,7 +16,7 @@ import math
 import os
 from pathlib import Path
 import re
-import shutil
+from vwa_io import safe_rmtree
 import subprocess
 import sys
 import tempfile
@@ -1089,7 +1089,7 @@ class QuickPublication(QObject):
                     raise ValueError('截图期间视频已变化，请重新预览。')
                 _check_stop(stop)
             except Exception:
-                shutil.rmtree(directory, ignore_errors=True)
+                safe_rmtree(directory)
                 raise
             return {'path': str(destination), 'temporary': True,
                     'directory': str(directory),

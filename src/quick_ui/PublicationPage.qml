@@ -1377,7 +1377,7 @@ Item {
                             }
 
                             UiComboBox {
-                                id: coverModeCombo
+                                id: coverModeCombo; objectName: "publicationCoverMode"
                                 Layout.fillWidth: true
                                 theme: page.theme
                                 model: [
@@ -1454,7 +1454,7 @@ Item {
                                     Accessible.name: page.controller.text("自选封面文件")
                                 }
                                 UiButton {
-                                    Layout.fillWidth: true
+                                    objectName: "publicationChooseCover"; Layout.fillWidth: true
                                     theme: page.theme
                                     text: page.textOf(page.view.coverFile).length > 0
                                         ? page.controller.text("更换封面图片…") : page.controller.text("选择封面图片…")
@@ -1476,7 +1476,7 @@ Item {
                             }
 
                             UiButton {
-                                Layout.fillWidth: true
+                                objectName: "publicationPreviewCover"; Layout.fillWidth: true
                                 theme: page.theme
                                 primary: page.coverPreviewUrl.length === 0
                                 text: page.busy ? page.controller.text("正在准备预览…")

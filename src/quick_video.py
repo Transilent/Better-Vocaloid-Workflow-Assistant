@@ -14,7 +14,6 @@ import math
 import os
 from pathlib import Path
 import re
-import shutil
 import uuid
 from typing import Any
 from urllib.parse import urlsplit
@@ -28,6 +27,7 @@ import source_contract
 import video_mixdown
 from common import ROOT, file_hash
 from i18n import tr
+from vwa_io import safe_rmtree
 
 _VIDEO_KINDS = frozenset(('video-analyze', 'video-adopt', 'video-render', 'video-register',
                           'video-preview', 'video-publish', 'video-restore', 'video-task-scan'))
@@ -185,36 +185,19 @@ class QuickVideo(QObject):
         self._owner = owner
         self._worker = worker
         self._closed = False
-        self._active_kind = ''
-        self._active_job: Path | None = None
-        self._owned_jobs: set[str] = set()
-        self._job_path: Path | None = None
-        self._mix_pin: dict[str, Any] | None = None
-        self._source_pin: dict[str, Any] | None = None
-        self._source_video = ''
-        self._mixdown = ''
-        self._output = ''
-        self._offset = 0.0
-        self._auto_align = True
-        self._normalize = False
+        self._active_kind, self._active_job, self._owned_jobs = '', None, set()
+        self._job_path = self._mix_pin = self._source_pin = None
+        self._source_video = self._mixdown = self._output = ''
+        self._offset, self._auto_align, self._normalize = 0.0, True, False
         self._state = 'idle'
         self._message = '选择原视频和 Mixdown；自动对齐后生成新的 MP4。'
-        self._alignment: dict[str, Any] | None = None
-        self._alignment_issue = ''
-        self._preview = ''
-        self._preview_time: float | None = None
-        self._result = ''
-        self._result_sha256 = ''
-        self._result_signature: tuple[int, int] | None = None
-        self._result_token: tuple[Any, ...] | None = None
-        self._result_receipt: dict[str, Any] | None = None
-        self._registered_row: dict[str, Any] | None = None
-        self._registered_sha256 = ''
-        self._task_choices: list[dict[str, Any]] = []
-        self._task_title = ''
-        self._task_source_bv = ''
-        self._task_source_url = ''
-        self._restore_message = ''
+        self._alignment, self._alignment_issue = None, ''
+        self._preview, self._preview_time = '', None
+        self._result = self._result_sha256 = ''
+        self._result_signature = self._result_token = self._result_receipt = None
+        self._registered_row, self._registered_sha256 = None, ''
+        self._task_choices, self._task_title = [], ''
+        self._task_source_bv = self._task_source_url = self._restore_message = ''
         self._task_scan_busy = False
         self._worker.changed.connect(self._emit)
 
@@ -222,6 +205,7 @@ class QuickVideo(QObject):
     def view(self) -> dict[str, Any]:
         busy = bool(self._worker.kind or self._active_kind)
         source_ok = bool(self._source_video and Path(self._source_video).is_file())
+        source_is_image = bool(source_ok and video_mixdown._is_still_image(Path(self._source_video)))
         mix_ok = bool(self._mixdown and Path(self._mixdown).is_file())
         output = Path(self._output) if self._output else None
         output_ok = bool(output and output.suffix.casefold() == '.mp4'
@@ -255,10 +239,11 @@ class QuickVideo(QObject):
             'preview': self._preview,
             'previewTime': self._preview_time,
             'sourceAvailable': source_ok,
+            'sourceIsImage': source_is_image,
             'mixdownAvailable': mix_ok,
             'result': self._result,
             'resultStale': self._is_result_stale(),
-            'canAnalyze': bool(source_ok and mix_ok and not busy),
+            'canAnalyze': bool(source_ok and mix_ok and not source_is_image and not busy),
             'canRender': bool(source_ok and mix_ok and output_ok and not busy),
             'canRegister': can_register,
             'canPublish': can_publish,
@@ -373,11 +358,15 @@ class QuickVideo(QObject):
             return
         text = '' if path is None else str(path)
         media_changed = False
+        still_selected = False
         if key == 'sourceVideo':
             media_changed = not _same_path(self._source_video, text)
             self._source_video = text
             if media_changed:
                 self._task_source_bv = self._task_source_url = self._restore_message = ''
+            if text and video_mixdown._is_still_image(Path(text)):
+                still_selected = True
+                self._auto_align, self._offset = False, 0.0
         elif key == 'mixdown':
             media_changed = not _same_path(self._mixdown, text)
             self._mixdown = text
@@ -387,14 +376,16 @@ class QuickVideo(QObject):
                 return
             self._output = text
         if media_changed:
-            self._alignment = None
-            self._alignment_issue = ''
-            self._preview = ''
-            self._preview_time = None
+            self._alignment, self._alignment_issue = None, ''
+            if key == 'sourceVideo':
+                self._preview = QUrl.fromLocalFile(text).toString() if still_selected else ''
+                self._preview_time = 0.0 if still_selected else None
         self._state = 'ready'
         if self._result:
             self._message = ('输入已修改；旧 MP4 保留，但当前结果不可登记。'
                              if self._is_result_stale() else '可视化检查所选输入。')
+        elif still_selected:
+            self._message = '已选择静图作为画面，已自动切换为手动偏移（0.000 秒）；合成时将持续显示完整音频时长。'
         else:
             self._message = '文件已选择；可以自动分析对齐后生成新视频。'
         self._emit()
@@ -731,11 +722,8 @@ class QuickVideo(QObject):
             return
         if path.parent != root or not _OWNED_JOB.fullmatch(path.name):
             return
-        if path.exists():
-            try:
-                shutil.rmtree(path)
-            except OSError:
-                return
+        if path.exists() and not safe_rmtree(path):
+            return
         self._owned_jobs.discard(str(path))
 
     def _cleanup_owned_jobs(self) -> None:
@@ -849,6 +837,13 @@ class QuickVideo(QObject):
             if not math.isfinite(seconds) or seconds < 0:
                 raise ValueError('预览时间必须是非负秒数。')
             source = Path(self._source_video).expanduser().resolve()
+            if video_mixdown._is_still_image(source):
+                if source.stat().st_size <= 0:
+                    raise ValueError('静图文件为空，请重新选择。')
+                self._preview, self._preview_time = QUrl.fromLocalFile(str(source)).toString(), 0.0
+                self._state = 'done' if self._result else 'ready'
+                self._notice('已载入静图预览；这不会写入或登记正式成品。')
+                return
             job = self._new_owned_job()
         except (OSError, RuntimeError, TypeError, ValueError) as error:
             self._notice(str(error))
@@ -882,8 +877,9 @@ class QuickVideo(QObject):
             return
         source_value, mix_value = self._source_video, self._mixdown
         if not source_value or not mix_value:
-            self._notice('请先选择原视频和 Mixdown。')
-            return
+            self._notice('请先选择原视频和 Mixdown。'); return
+        if video_mixdown._is_still_image(Path(source_value)):
+            self._auto_align = False; self._notice('静图没有原片音轨，已切换为手动偏移；可直接合成或调整偏移。'); return
         token = self._media_token()
         try:
             job = self._new_owned_job()

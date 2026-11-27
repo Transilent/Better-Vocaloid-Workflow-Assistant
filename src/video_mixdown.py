@@ -340,11 +340,17 @@ def _render(job, video, mixdown, output, *, offset=None, reference=None, normali
         if not math.isfinite(offset) or abs(offset) > 3600:
             raise ValueError('手动偏移应在正负 3600 秒内。')
     limit = None if offset is not None else _max_shift_value(max_shift)
+    still_image = _is_still_image(video)
     roles = (('video', video), ('mixdown', mixdown), ('reference', reference))
     tell('verify', '正在校验视频和音频输入…')
     fingerprints, path_hashes = _snapshot_inputs(roles)
-    measured = {'offset_seconds': offset, 'method': 'manual', 'accepted': True}
-    auto = offset is None
+    if still_image and offset is None:
+        offset = 0.0
+        measured = {'offset_seconds': 0.0, 'method': 'still_image_default', 'accepted': True}
+        auto = False
+    else:
+        measured = {'offset_seconds': offset, 'method': 'manual', 'accepted': True}
+        auto = offset is None
     if auto:
         state = _report_state(alignment_report, fingerprints, limit) if alignment_report is not None else 'absent'
         if state == 'usable':
@@ -397,7 +403,6 @@ def _render(job, video, mixdown, output, *, offset=None, reference=None, normali
             filters.append('loudnorm=I=-14:TP=-1:LRA=11:linear=true:measured_I={input_i}:'
                 'measured_TP={input_tp}:measured_LRA={input_lra}:measured_thresh={input_thresh}:'
                 'offset={target_offset}'.format(**loudness))
-        still_image = _is_still_image(video)
         if not still_image:
             filters.append('apad')  # Keep the full video when the mix has a shorter tail.
         pending = output.with_name(output.stem+'.pending.mp4')
@@ -407,10 +412,10 @@ def _render(job, video, mixdown, output, *, offset=None, reference=None, normali
             if still_image:
                 mux_cmd = [
                     ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error', '-n',
-                    '-loop', '1', '-framerate', '30', '-i', str(video),
+                    '-loop', '1', '-framerate', '2', '-i', str(video),
                     '-i', str(mixdown), '-map', '0:v:0', '-map', '1:a:0',
-                    '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
-                    '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'stillimage', '-pix_fmt', 'yuv420p',
+                    '-vf', "scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2",
+                    '-r', '24', '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'stillimage', '-pix_fmt', 'yuv420p',
                     '-af', ','.join(filters), '-c:a', 'aac', '-b:a', '320k',
                     '-ar', '44100', '-shortest', '-movflags', '+faststart', str(pending),
                 ]

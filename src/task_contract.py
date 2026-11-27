@@ -15,7 +15,7 @@ import threading
 import time
 
 from common import app_path, atomic_json, file_hash, locked, native_path, saved_path
-from vwa_io import cached_file_hash
+from vwa_io import cached_file_hash, file_hash as _RAW_FILE_HASH
 
 SCHEMA = 1
 MAX_BYTES = 8 * 1024**2
@@ -566,7 +566,7 @@ def inspect(job, *, verify=True, check=None, artifact_ids=None, publication_plat
             elif not verify:
                 own[key] = 'unchecked'
             else:
-                digest = cached_file_hash(path, stat, check=check)
+                digest = cached_file_hash(path, stat, check=check) if file_hash is _RAW_FILE_HASH else file_hash(path, check=check)
                 own[key] = 'verified' if digest == entry['sha256'] else 'modified'
         except FileNotFoundError:
             own[key] = 'missing'
