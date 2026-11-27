@@ -1010,23 +1010,20 @@ def install(language, audio_path, report_path, reference_text='', *, pitch_avail
             }
         if ctx.fa_language=='zh' and outcome and _state['hfa_model'] is not None:
             from pitch_accuracy import current_pitch
-            _state['voiced_pause_retries'] = retry_voiced_pauses(_state['hfa_model'],outcome,chunks,sr,
-                current_pitch(),native_hfa,kwargs.get('cancel_checker'),_state['audio'])
+            _state['voiced_pause_retries'] = retry_voiced_pauses(_state['hfa_model'],outcome,chunks,sr,current_pitch(),native_hfa,kwargs.get('cancel_checker'),_state['audio'])
+        _state['hfa_model'] = None; hybrid.free_memory()
         _state['syllables'] = syllables_from_alignment(outcome, chunks, ctx.fa_language) if outcome else []
         _state['unvoiced'] = unvoiced_from_alignment(outcome, chunks, ctx.fa_language) if outcome else []
         notes = native_stage(chunks, sr, ctx, outcome, *args, **kwargs)
         _state['tail_proposals'] = []
         if ctx.fa_language in ('ja','zh') and outcome and _state['pitch_available']:
             from pitch_accuracy import current_pitch
-            windows = (japanese_tail_windows(outcome,chunks) if ctx.fa_language=='ja'
-                else chinese_gap_windows(outcome,chunks,current_pitch(),sr))
+            windows = (japanese_tail_windows(outcome,chunks) if ctx.fa_language=='ja' else chinese_gap_windows(outcome,chunks,current_pitch(),sr))
             model, budget = None, 0.
             for window in windows[:16]:
                 checker = kwargs.get('cancel_checker')
-                if checker and checker():
-                    raise InterruptedError('句尾补提已取消。')
-                if budget+window['right']-window['left'] > 24.:
-                    break
+                if checker and checker(): raise InterruptedError('句尾补提已取消。')
+                if budget+window['right']-window['left'] > 24.: break
                 budget += window['right']-window['left']
                 if model is None:
                     model = game_api.load_game_model(kwargs['game_model_dir'],device=ctx.device)
@@ -1075,6 +1072,9 @@ def install(language, audio_path, report_path, reference_text='', *, pitch_avail
                 except (OSError,ValueError,RuntimeError) as error:
                     entry['error']=type(error).__name__+': '+str(error)
                 _state['note_boundary_checks'].append(entry)
+            if model is not None:
+                if hasattr(model, 'shutdown'): model.shutdown()
+                del model; hybrid.free_memory()
         return notes
 
     def hfa(model, directory, language='zh', cancel_checker=None, use_phoneme_g2p=False):

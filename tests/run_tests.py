@@ -110,6 +110,7 @@ shared_tests = (
     'test_architecture_guards.py', 'test_stability_and_perf_guards.py',
     'test_project_convert.py', 'test_project_convert_e2e.py',
     'test_updater_and_infra_upgrade.py', 'test_tier1_infra.py', 'test_tier2_infra.py', 'test_tier3_ux.py',
+    'test_amd_gpu_foundation.py',
 )
 
 # L1 integration tests that depend on external multi-GB runtime packages/binaries

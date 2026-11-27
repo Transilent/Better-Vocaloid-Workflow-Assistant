@@ -750,6 +750,10 @@
       "source": "src/runtime_devices.py"
     },
     {
+      "file": "gpu_backend.py",
+      "source": "src/gpu_backend.py"
+    },
+    {
       "file": "dependency_profiles.py",
       "source": "src/dependency_profiles.py"
     },

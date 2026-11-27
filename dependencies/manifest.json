@@ -4,7 +4,7 @@
   "platform": "Windows x86_64",
   "legacy_tool_paths": {},
   "files": 10815,
-  "bytes": 7505758434,
+  "bytes": 7505776179,
   "entries": [
     {
       "file": "dependencies/browser/chrome/154.0.8037.98/154.0.8037.98.manifest",
@@ -14413,8 +14413,8 @@
     },
     {
       "file": "dependencies/vocal2midi/inference/device_utils.py",
-      "bytes": 7554,
-      "sha256": "66304c52e975a4371d84813abcc695be742079beffc089635a5babdbc5f6f600"
+      "bytes": 16453,
+      "sha256": "2c1a6416e5f9b795bdb1be0b20ebca7b589acd444f4f8da1683db49ea89c3dd2"
     },
     {
       "file": "dependencies/vocal2midi/inference/game/__init__.py",
@@ -46748,8 +46748,8 @@
     },
     {
       "file": "dependencies/vocal2midi2/inference/API/rmvpe_api.py",
-      "bytes": 11723,
-      "sha256": "b709c4e8923a4515e5f215a61b764a0dad70f264d10d7f9405c8eb15f89fa91c"
+      "bytes": 12509,
+      "sha256": "83ed0fccd93db6aff352375048a334d1b730289fd407b05afa2269bc4fd28e10"
     },
     {
       "file": "dependencies/vocal2midi2/inference/API/slicer_api.py",
@@ -47158,8 +47158,8 @@
     },
     {
       "file": "dependencies/vocal2midi2/inference/device_utils.py",
-      "bytes": 8393,
-      "sha256": "a352e011c5f9dc2f82d3eb5ed181cd7b9a68568a0bfdfc1e384fe8afdc3a75c9"
+      "bytes": 16453,
+      "sha256": "2c1a6416e5f9b795bdb1be0b20ebca7b589acd444f4f8da1683db49ea89c3dd2"
     },
     {
       "file": "dependencies/vocal2midi2/inference/game/__init__.py",
