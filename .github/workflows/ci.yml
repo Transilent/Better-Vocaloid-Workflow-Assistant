@@ -36,7 +36,7 @@ jobs:
 
       - name: Install CI lint & L0 pure-Python test dependencies
         shell: pwsh
-        run: python -m pip install --upgrade ruff mido pyyaml
+        run: python -m pip install --upgrade ruff numpy mido pyyaml
 
       - name: Prepare generated source tree
         shell: pwsh

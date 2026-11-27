@@ -52,40 +52,40 @@ if(NOT _vwa_miniaudio_actual_sha256 STREQUAL "${VWA_MINIAUDIO_HEADER_SHA256}"
     )
 endif()
 
+# --- Resolve signalsmith-linear FIRST so signalsmith-stretch reuses our pinned target ---
+if(VWA_SIGNALSMITH_LINEAR_DIR)
+    set(_vwa_linear_dir "${VWA_SIGNALSMITH_LINEAR_DIR}")
+else()
+    FetchContent_Declare(
+        signalsmith-linear
+        GIT_REPOSITORY https://github.com/Signalsmith-Audio/linear.git
+        GIT_TAG ${VWA_SIGNALSMITH_LINEAR_COMMIT}
+        GIT_SHALLOW TRUE
+    )
+    FetchContent_MakeAvailable(signalsmith-linear)
+    set(_vwa_linear_dir "${signalsmith-linear_SOURCE_DIR}/include")
+endif()
+
+if(NOT EXISTS "${_vwa_linear_dir}/signalsmith-linear/stft.h")
+    message(FATAL_ERROR "signalsmith-linear/stft.h not found in: ${_vwa_linear_dir}")
+endif()
+
 # --- Resolve signalsmith-stretch ---
 if(VWA_SIGNALSMITH_STRETCH_DIR)
     set(_vwa_stretch_dir "${VWA_SIGNALSMITH_STRETCH_DIR}")
 else()
     FetchContent_Declare(
-        signalsmith_stretch
+        signalsmith-stretch
         GIT_REPOSITORY https://github.com/Signalsmith-Audio/signalsmith-stretch.git
         GIT_TAG ${VWA_SIGNALSMITH_STRETCH_COMMIT}
         GIT_SHALLOW TRUE
     )
-    FetchContent_MakeAvailable(signalsmith_stretch)
-    set(_vwa_stretch_dir "${signalsmith_stretch_SOURCE_DIR}")
+    FetchContent_MakeAvailable(signalsmith-stretch)
+    set(_vwa_stretch_dir "${signalsmith-stretch_SOURCE_DIR}")
 endif()
 
 if(NOT EXISTS "${_vwa_stretch_dir}/signalsmith-stretch.h")
     message(FATAL_ERROR "signalsmith-stretch.h not found in: ${_vwa_stretch_dir}")
-endif()
-
-# --- Resolve signalsmith-linear ---
-if(VWA_SIGNALSMITH_LINEAR_DIR)
-    set(_vwa_linear_dir "${VWA_SIGNALSMITH_LINEAR_DIR}")
-else()
-    FetchContent_Declare(
-        signalsmith_linear
-        GIT_REPOSITORY https://github.com/Signalsmith-Audio/linear.git
-        GIT_TAG ${VWA_SIGNALSMITH_LINEAR_COMMIT}
-        GIT_SHALLOW TRUE
-    )
-    FetchContent_MakeAvailable(signalsmith_linear)
-    set(_vwa_linear_dir "${signalsmith_linear_SOURCE_DIR}/include")
-endif()
-
-if(NOT EXISTS "${_vwa_linear_dir}/signalsmith-linear/stft.h")
-    message(FATAL_ERROR "signalsmith-linear/stft.h not found in: ${_vwa_linear_dir}")
 endif()
 
 # --- Target 1: vwa_native_output.dll ---
