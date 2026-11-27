@@ -469,54 +469,12 @@ ScrollView {
                         textFormat: Text.PlainText
                     }
 
-                    RowLayout {
-                        objectName: "roformerRuntimeStatusRow"
-                        Layout.fillWidth: true
+                    RoformerRuntimeBar {
                         visible: page.component.id === "roformer"
-                        spacing: Math.round(8 * page.theme.scale)
-
-                        Repeater {
-                            model: [
-                                { key: "cuda", label: "GPU (CUDA)" },
-                                { key: "cpu", label: "CPU" }
-                            ]
-                            delegate: Rectangle {
-                                required property var modelData
-                                readonly property var runtimesMap: page.health.runtimes || ({})
-                                readonly property bool installed: runtimesMap[modelData.key] === "ready"
-                                    || (!runtimesMap[modelData.key] && page.health.ready_runtime === modelData.key)
-                                readonly property bool selected: page.controller.runtime === modelData.key
-                                readonly property color tone: installed ? page.theme.success : page.theme.muted
-                                objectName: "roformerStatus_" + modelData.key
-                                Layout.preferredHeight: Math.round(26 * page.theme.scale)
-                                Layout.preferredWidth: runtimePillText.implicitWidth + Math.round(18 * page.theme.scale)
-                                radius: height / 2
-                                color: installed
-                                    ? Qt.tint(page.theme.success, Qt.rgba(0, 0, 0, 0.86))
-                                    : page.theme.raised
-                                border.color: selected ? page.theme.accent : (installed ? page.theme.success : page.theme.line)
-                                border.width: selected ? 1.5 : 1
-
-                                Text {
-                                    id: runtimePillText
-                                    anchors.centerIn: parent
-                                    text: modelData.label + " · " + page.controller.text(installed ? "已安装" : "未安装")
-                                    color: installed ? page.theme.success : page.theme.muted
-                                    font.pixelSize: Math.round(11 * page.theme.scale)
-                                    font.weight: selected ? Font.DemiBold : Font.Normal
-                                    textFormat: Text.PlainText
-                                }
-
-                                MouseArea {
-                                    anchors.fill: parent
-                                    enabled: page.idle
-                                    cursorShape: page.idle ? Qt.PointingHandCursor : Qt.ArrowCursor
-                                    onClicked: page.controller.setRuntime(modelData.key)
-                                }
-                            }
-                        }
-
-                        Item { Layout.fillWidth: true }
+                        theme: page.theme
+                        controller: page.controller
+                        health: page.health
+                        idle: page.idle
                     }
 
                     Text {

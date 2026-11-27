@@ -438,6 +438,10 @@
       "source": "src/quick_ui/ComponentsPage.qml"
     },
     {
+      "file": "quick_ui/RoformerRuntimeBar.qml",
+      "source": "src/quick_ui/RoformerRuntimeBar.qml"
+    },
+    {
       "file": "quick_ui/Main.qml",
       "source": "src/quick_ui/Main.qml"
     },
