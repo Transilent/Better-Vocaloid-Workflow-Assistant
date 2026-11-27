@@ -26,7 +26,7 @@ import math
 import os
 from pathlib import Path
 import re
-import tempfile
+from vwa_io import resilient_tempdir
 from typing import Any
 import unicodedata
 
@@ -185,8 +185,8 @@ def _resolve_runtime(value: Any) -> Path:
 @contextmanager
 def _audit_scratch(value: Any):
     if value is None:
-        with tempfile.TemporaryDirectory(prefix="vwa-export-audit-") as temporary:
-            yield Path(temporary)
+        with resilient_tempdir(prefix="vwa-export-audit-") as temporary:
+            yield temporary
         return
     root = _resolved_path(value, "output_root")
     if _io_path(root).exists() and not _io_path(root).is_dir():

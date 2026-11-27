@@ -15,6 +15,7 @@ import threading
 import time
 
 from common import app_path, atomic_json, file_hash, locked, native_path, saved_path
+from vwa_io import cached_file_hash, file_hash as _RAW_FILE_HASH
 
 SCHEMA = 1
 MAX_BYTES = 8 * 1024**2
@@ -89,6 +90,7 @@ def _sha(value):
 
 def _safe(path, boundary=None, *, _verified_dirs=None):
     path = Path(path).absolute()
+    parent_verified = _verified_dirs is not None and '..' not in path.parts and path.parent in _verified_dirs
     for part in (path, *path.parents):
         if _verified_dirs is not None and part in _verified_dirs:
             break
@@ -98,11 +100,12 @@ def _safe(path, boundary=None, *, _verified_dirs=None):
             st = None
         if st is not None and (getattr(st, 'st_file_attributes', 0) & 1024 or _stat.S_ISLNK(st.st_mode)):
             raise ContractError('文件路径包含链接或重解析点：' + str(path))
-        if _verified_dirs is not None and st is not None and part != path:
-            _verified_dirs.add(part)
         if boundary and part == boundary:
             break
-    path = path.resolve()
+    if not parent_verified:
+        path = path.resolve()
+        if _verified_dirs is not None and path.parent.is_dir():
+            _verified_dirs.add(path.parent)
     if boundary and (path == boundary or not path.is_relative_to(boundary)):
         raise ContractError('任务产物路径超出任务目录。')
     return path
@@ -178,16 +181,16 @@ def _metadata(job):
     if publication is not None and not isinstance(publication, dict): raise ContractError('发布登记无效。')
     sessions = value.get('calibration_sessions', {})
     if not isinstance(sessions, dict) or len(sessions) > 128: raise ContractError('校准任务登记无效。')
+    job_root, vdirs = Path(job).resolve(), set()
     for row in [*bindings.values(), *sessions.values(), *([publication] if publication else [])]:
-        if not isinstance(row, dict) or 'id' not in row or 'entry' not in row:
-            raise ContractError('成果登记缺少文件记录。')
-        _validate_entry(job, row['id'], row['entry'])
+        if not isinstance(row, dict) or 'id' not in row or 'entry' not in row: raise ContractError('成果登记缺少文件记录。')
+        _validate_entry(job, row['id'], row['entry'], _job_root=job_root, _verified_dirs=vdirs)
         if not isinstance(row.get('files', {}), dict): raise ContractError('关联文件登记无效。')
-        for key, file in row.get('files', {}).items(): _validate_entry(job, key, file)
+        for key, file in row.get('files', {}).items(): _validate_entry(job, key, file, _job_root=job_root, _verified_dirs=vdirs)
     if publication:
         if not isinstance(publication.get('platforms', {}), dict) or not isinstance(publication.get('files', {}), dict):
             raise ContractError('发布登记无效。')
-        for key, row in publication.get('files', {}).items(): _validate_entry(job, key, row)
+        for key, row in publication.get('files', {}).items(): _validate_entry(job, key, row, _job_root=job_root, _verified_dirs=vdirs)
     value.setdefault('schema', SCHEMA)
     return value
 
@@ -549,7 +552,6 @@ def inspect(job, *, verify=True, check=None, artifact_ids=None, publication_plat
                 scope.add(key)
                 pending.extend(dep['id'] for dep in dependencies(entries[key]))
     results, own = {}, {}
-    hashes = {}
     for key, entry in entries.items():
         if scope is not None and key not in scope:
             continue
@@ -564,10 +566,8 @@ def inspect(job, *, verify=True, check=None, artifact_ids=None, publication_plat
             elif not verify:
                 own[key] = 'unchecked'
             else:
-                fingerprint = (path, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino)
-                if fingerprint not in hashes:
-                    hashes[fingerprint] = file_hash(path, check=check)
-                own[key] = 'verified' if hashes[fingerprint] == entry['sha256'] else 'modified'
+                digest = cached_file_hash(path, stat, check=check) if file_hash is _RAW_FILE_HASH else file_hash(path, check=check)
+                own[key] = 'verified' if digest == entry['sha256'] else 'modified'
         except FileNotFoundError:
             own[key] = 'missing'
         except InterruptedError:

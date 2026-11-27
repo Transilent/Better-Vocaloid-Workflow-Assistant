@@ -828,58 +828,51 @@ Item {
             visible: !!text
             text: pane.authorView.trial || pane.authorView.message || ""
         }
-        RowLayout {
+        Flow {
             Layout.fillWidth: true
+            Layout.minimumWidth: 0
             visible: pane.recipeControlsVisible
+            spacing: Math.round(8 * pane.unit)
             Field {
                 objectName: "styleAuthorName"
-                Layout.fillWidth: true
-                Layout.minimumWidth: 100 * pane.unit
+                width: Math.min(parent.width, Math.round(220 * pane.unit))
                 placeholderText: pane.label("风格名称")
                 text: pane.fields.name || ""
                 maximumLength: 80
                 enabled: !pane.authorView.busy && !!pane.authorView.ready
                 onTextEdited: pane.controller.edit("name", text)
             }
-            Label { text: pane.label("风格强度") }
-            WorkshopSlider {
-                theme: pane.theme
-                Layout.preferredWidth: 91 * pane.unit
-                Accessible.name: pane.label("风格强度")
-                enabled: !pane.authorView.busy && !!pane.authorView.ready
-                from: 0
-                to: 1
-                stepSize: .01
-                value: Number(pane.fields.strength || 0)
-                onMoved: pane.controller.edit("strength", value)
-            }
-            Label { text: Math.round((pane.fields.strength || 0) * 100) + "%" }
-            UiButton {
-                visible: !!pane.authorView.running
-                theme: pane.theme
-                quiet: true
-                text: pane.label("取消")
-                onClicked: pane.controller.cancel()
+            Row {
+                spacing: Math.round(6 * pane.unit)
+                height: Math.round(30 * pane.unit)
+                Label { anchors.verticalCenter: parent.verticalCenter; text: pane.label("风格强度") }
+                WorkshopSlider {
+                    anchors.verticalCenter: parent.verticalCenter
+                    theme: pane.theme; width: 91 * pane.unit
+                    Accessible.name: pane.label("风格强度")
+                    enabled: !pane.authorView.busy && !!pane.authorView.ready
+                    from: 0; to: 1; stepSize: .01
+                    value: Number(pane.fields.strength || 0)
+                    onMoved: pane.controller.edit("strength", value)
+                }
+                Label { anchors.verticalCenter: parent.verticalCenter; text: Math.round((pane.fields.strength || 0) * 100) + "%" }
             }
             UiButton {
-                objectName: "styleAuthorTrial"
-                theme: pane.theme
-                text: pane.label("试套当前选区")
+                visible: !!pane.authorView.running; theme: pane.theme; quiet: true
+                text: pane.label("取消"); onClicked: pane.controller.cancel()
+            }
+            UiButton {
+                objectName: "styleAuthorTrial"; theme: pane.theme; text: pane.label("试套当前选区")
                 enabled: !!pane.authorView.validRecipe && !!pane.target.ready && !pane.authorView.busy
                 onClicked: pane.controller.trialStyle()
             }
             UiButton {
-                objectName: "styleAuthorApply"
-                theme: pane.theme
-                text: pane.label("应用到时间选区")
+                objectName: "styleAuthorApply"; theme: pane.theme; text: pane.label("应用到时间选区")
                 enabled: !!pane.authorView.canApplyTrial && !pane.authorView.busy
                 onClicked: pane.controller.applyStyle()
             }
             UiButton {
-                objectName: "styleAuthorSave"
-                theme: pane.theme
-                primary: true
-                text: pane.label("保存配方")
+                objectName: "styleAuthorSave"; theme: pane.theme; primary: true; text: pane.label("保存配方")
                 enabled: !!pane.authorView.validRecipe && !pane.authorView.busy
                 onClicked: pane.controller.saveStyle()
             }

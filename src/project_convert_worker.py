@@ -21,6 +21,15 @@ if str(SRC_DIR.parent) not in sys.path:
     sys.path.insert(0, str(SRC_DIR.parent))
 
 from common import ROOT, file_hash
+from project_convert_compat import (
+    detect_tracks_language as _detect_language,
+    detect_ust_encoding,
+    friendly_project_error,
+    patch_ustx_masked_curve,
+    prepare_diffsinger_project,
+    strip_extended_prefix,
+    vsqx_english_dict_available,
+)
 
 
 CONVERTER_REGISTRY: dict[str, tuple[str, str]] = {
@@ -41,9 +50,6 @@ CONVERTER_REGISTRY: dict[str, tuple[str, str]] = {
     'srt': ('libresvip.plugins.srt.srt_converter', 'SrtConverter'),
 }
 
-_CJK_RE = re.compile(r'[\u4e00-\u9fff]')
-_KANA_RE = re.compile(r'[\u3040-\u30ff]')
-_LATIN_RE = re.compile(r'[A-Za-z]')
 _SV_QUARTER = 705_600_000
 _TICK_FACTOR = _SV_QUARTER // 480
 
@@ -112,28 +118,6 @@ def _get_converter(fmt: str):
         raise ValueError(f'未知格式插件：{fmt}')
     mod_name, cls_name = CONVERTER_REGISTRY[fmt]
     return getattr(import_module(mod_name), cls_name)
-
-
-def _detect_language(tracks) -> str:
-    cjk = kana = latin = 0
-    for track in tracks:
-        for note in getattr(track, 'note_list', ()):
-            lyr = str(getattr(note, 'lyric', '') or '').strip()
-            if not lyr or lyr in ('-', '+', '+~', 'R', 'r', 'sil', 'sp', 'pau', 'br'):
-                continue
-            if _KANA_RE.search(lyr):
-                kana += 1
-            elif _CJK_RE.search(lyr):
-                cjk += 1
-            elif _LATIN_RE.search(lyr):
-                latin += 1
-    if kana >= cjk and kana >= latin and kana > 0:
-        return 'ja'
-    if cjk >= latin and cjk > 0:
-        return 'zh'
-    if latin > 0:
-        return 'en'
-    return 'zh'
 
 
 def _load_high_fidelity_project(path: Path, fmt: str, *, include_pitch: bool = True):
@@ -266,6 +250,8 @@ def _build_output_options(fmt: str, *, language: str, lyric_mode: str, source_st
         }
     if fmt == 'mid':
         return {'export_lyrics': True, 'lyric_encoding': 'utf-8'}
+    if fmt == 'ust':
+        return {'encoding': 'utf-8', 'version': 2.0}
     if fmt == 'lrc':
         return {'title': source_stem, 'by': 'VWA', 'ignore_slur_notes': lyric_mode == 'adapt', 'encoding': 'utf-8'}
     if fmt == 'srt':
@@ -273,11 +259,14 @@ def _build_output_options(fmt: str, *, language: str, lyric_mode: str, source_st
     return {}
 
 
-def _build_input_options(fmt: str) -> dict[str, Any]:
+def _build_input_options(fmt: str, path: Path | None = None) -> dict[str, Any]:
     if fmt == 'ustx':
         return {'import_pitch': True, 'import_instrumental_track': True}
     if fmt == 'mid':
-        return {'import_lyrics': True, 'lyric_encoding': 'utf-8'}
+        return {'import_lyrics': True, 'lyric_encoding': 'utf-8', 'multi_channel': 'split'}
+    if fmt == 'ust':
+        enc = detect_ust_encoding(path) if path is not None else 'utf-8'
+        return {'import_pitch': True, 'encoding': enc}
     return {}
 
 
@@ -305,26 +294,41 @@ _CCS_FLOAT_PARTITION_RE = re.compile(
 
 
 def _load_with_converter(converter, path: Path, fmt: str):
-    opts = _build_input_options(fmt)
+    opts = _build_input_options(fmt, path)
     try:
         return converter.load(path, opts)
     except Exception as exc:
+        msg = str(exc).lower()
+        # Modern OpenUtau projects write `type: MaskedCurve` on rpit/pito expressions,
+        # which LibreSVIP 2.9.2's strict Pydantic union rejects.
+        if fmt == 'ustx' and 'maskedcurve' in msg:
+            raw_text = path.read_text(encoding='utf-8-sig')
+            patched, count = patch_ustx_masked_curve(raw_text)
+            if count:
+                from vwa_io import resilient_tempdir
+                with resilient_tempdir(prefix='vwa-ustx-compat-') as tmp:
+                    temp_path = tmp / path.name
+                    temp_path.write_text(patched, encoding='utf-8')
+                    return converter.load(temp_path, opts)
         # Official CeVIO projects can store decimal splitter positions (e.g. Partition="76.8")
         # on SongEditor/TalkEditor UI layout tags, which LibreSVIP's Pydantic int field rejects.
-        if fmt != 'ccs' or 'partition' not in str(exc).lower():
-            raise
-        raw_text = path.read_text(encoding='utf-8-sig')
-        patched, count = _CCS_FLOAT_PARTITION_RE.subn(
-            lambda m: f'{m.group(1)}{round(float(m.group(2)))}{m.group(3)}',
-            raw_text,
-        )
-        if not count:
-            raise
-        import tempfile
-        with tempfile.TemporaryDirectory(prefix='vwa-ccs-compat-') as tmp:
-            temp_path = Path(tmp) / path.name
-            temp_path.write_text(patched, encoding='utf-8')
-            return converter.load(temp_path, opts)
+        if fmt == 'ccs' and 'partition' in msg:
+            raw_text = path.read_text(encoding='utf-8-sig')
+            patched, count = _CCS_FLOAT_PARTITION_RE.subn(
+                lambda m: f'{m.group(1)}{round(float(m.group(2)))}{m.group(3)}',
+                raw_text,
+            )
+            if count:
+                from vwa_io import resilient_tempdir
+                with resilient_tempdir(prefix='vwa-ccs-compat-') as tmp:
+                    temp_path = tmp / path.name
+                    temp_path.write_text(patched, encoding='utf-8')
+                    return converter.load(temp_path, opts)
+        # UST encoding fallback: retry alternate encoding (UTF-8 <-> Shift-JIS) if decoding failed
+        if fmt == 'ust' and ('codec' in msg or 'decode' in msg or 'encoding' in msg):
+            alt = 'SHIFT_JIS' if opts.get('encoding') == 'utf-8' else 'utf-8'
+            return converter.load(path, {**opts, 'encoding': alt})
+        raise
 
 
 def _handle_inspect(payload: dict[str, Any]) -> dict[str, Any]:
@@ -379,7 +383,7 @@ def _handle_inspect(payload: dict[str, Any]) -> dict[str, Any]:
     tempos = [{'bpm': float(t.bpm)} for t in (project.song_tempo_list or [])]
     meters = [{'numerator': m.numerator, 'denominator': m.denominator} for m in (project.time_signature_list or [])]
     return {
-        'path': str(path),
+        'path': strip_extended_prefix(path),
         'fileName': path.name,
         'sizeBytes': path.stat().st_size,
         'sha256': file_hash(path),
@@ -389,6 +393,7 @@ def _handle_inspect(payload: dict[str, Any]) -> dict[str, Any]:
         'formatVersion': str(getattr(project, 'version', '') or ''),
         'sv2': False,
         'acep2': False,
+        'hasGroupRefs': False,
         'engineSource': 'libresvip',
         'tempoSummary': _format_tempo_summary(tempos),
         'meterSummary': _format_meter_summary(meters),
@@ -398,7 +403,7 @@ def _handle_inspect(payload: dict[str, Any]) -> dict[str, Any]:
         'instrumentalTrackCount': sum(1 for t in tracks if t['kind'] == 'instrumental'),
         'tracks': tracks,
         'sourceNotes': [f'已通过 LibreSVIP 插件解析 {spec.short_label} 工程。'],
-        'defaultOutputDir': str(path.parent),
+        'defaultOutputDir': strip_extended_prefix(path.parent),
     }
 
 
@@ -410,7 +415,8 @@ def _dump_and_verify_one(
     language: str,
     options: dict[str, Any],
     source_stem: str,
-) -> dict[str, Any]:
+    expected_source_notes: int | None = None,
+) -> tuple[dict[str, Any], list[str]]:
     from libresvip.model.base import InstrumentalTrack, SingingTrack
     from project_convert_service import SPECS_BY_ID
     from project_exports import (
@@ -423,8 +429,10 @@ def _dump_and_verify_one(
     spec = SPECS_BY_ID[target_format]
     converter = _get_converter(target_format)
     vocal_tracks = [t for t in sub_project.track_list if isinstance(t, SingingTrack)]
-    source_notes = sum(len(t.note_list) for t in vocal_tracks)
+    loaded_notes = sum(len(t.note_list) for t in vocal_tracks)
+    source_notes = expected_source_notes if (expected_source_notes is not None and expected_source_notes > loaded_notes) else loaded_notes
     track_names = [str(t.title or f'轨道 {i + 1}') for i, t in enumerate(vocal_tracks)]
+    item_warnings: list[str] = []
 
     # Strip instrumental tracks if disabled or unsupported by target
     if not options['include_instrumental'] or not spec.supports_instrumental:
@@ -447,88 +455,9 @@ def _dump_and_verify_one(
 
     ds_skipped_rests = 0
     if target_format == 'ds':
-        # DiffSinger dictionary lookup fails on rest markers, OpenUtau slur markers, or ASCII
-        # pinyin/romaji lyrics when `note.pronunciation` is blank (get_pinyin_series strips non-CJK).
-        # Score both bundled dictionaries against the actual track notes so romaji Japanese projects
-        # (which lack kana) also select `japanese_dict_full` automatically.
-        from libresvip.core.lyric_phoneme.chinese import get_pinyin_series
-        from libresvip.core.lyric_phoneme.japanese import to_romaji
-        from libresvip.plugins.ds.utils.phoneme_dict import get_opencpop_dict
-
-        zh_table = get_opencpop_dict('opencpop-extension')
-        ja_table = get_opencpop_dict('japanese_dict_full')
-        rest_markers = {'', 'r', 'sil', 'sp', 'pau', 'br', 'ap'}
-        slur_markers = {'+', '~', '+~', '+*', 'ー'}
-
-        def _resolve_ds_pron(lyr: str, pron: str, table: dict[str, str], is_ja: bool) -> str | None:
-            if pron and pron in table:
-                return pron
-            if pron and pron.lower() in table:
-                return pron.lower()
-            if lyr.lower() in table:
-                return lyr.lower()
-            if is_ja:
-                rom = to_romaji(lyr).strip().lower()
-                if rom in table:
-                    return rom
-            else:
-                py_list = get_pinyin_series([lyr])
-                py = (py_list[0] if py_list else '').strip().lower()
-                if py in table:
-                    return py
-            return None
-
-        singing_notes = [
-            n
-            for tr in draft.track_list
-            if isinstance(tr, SingingTrack)
-            for n in tr.note_list
-        ]
-        zh_hits = ja_hits = 0
-        for note in singing_notes:
-            lyr = str(note.lyric or '').strip()
-            pron = str(note.pronunciation or '').strip() if note.pronunciation is not None else ''
-            if (lyr.casefold() in rest_markers and not pron) or lyr in slur_markers or '-' in lyr:
-                continue
-            if _resolve_ds_pron(lyr, pron, zh_table, False) is not None:
-                zh_hits += 1
-            if _resolve_ds_pron(lyr, pron, ja_table, True) is not None:
-                ja_hits += 1
-
-        use_ja_dict = (ja_hits > zh_hits) or (ja_hits == zh_hits and language == 'ja')
-        dict_name = 'japanese_dict_full' if use_ja_dict else 'opencpop-extension'
+        draft, dict_name, ds_skipped_rests, ds_warns = prepare_diffsinger_project(draft, language=language)
         out_opts['dict_name'] = dict_name
-        phoneme_table = ja_table if use_ja_dict else zh_table
-
-        cleaned_tracks = []
-        for tr in draft.track_list:
-            if isinstance(tr, SingingTrack):
-                kept = []
-                for note in tr.note_list:
-                    lyr = str(note.lyric or '').strip()
-                    pron = str(note.pronunciation or '').strip() if note.pronunciation is not None else ''
-                    if lyr.casefold() in rest_markers and not pron:
-                        ds_skipped_rests += 1
-                        continue
-                    if lyr in slur_markers or '-' in lyr:
-                        if not kept:
-                            ds_skipped_rests += 1
-                            continue
-                        kept.append(note.model_copy(update={'lyric': '-', 'pronunciation': None}))
-                        continue
-                    resolved_pron = _resolve_ds_pron(lyr, pron, phoneme_table, use_ja_dict)
-                    updates: dict[str, Any] = {}
-                    if resolved_pron is not None:
-                        updates['pronunciation'] = resolved_pron
-                    elif note.pronunciation is not None and not pron:
-                        updates['pronunciation'] = None
-                    if not lyr and resolved_pron:
-                        updates['lyric'] = resolved_pron
-                    kept.append(note.model_copy(update=updates) if updates else note)
-                cleaned_tracks.append(tr.model_copy(update={'note_list': kept}))
-            else:
-                cleaned_tracks.append(tr)
-        draft = draft.model_copy(update={'track_list': cleaned_tracks})
+        item_warnings.extend(ds_warns)
 
     pending = target_path.with_name(f'.pending-{os.getpid()}-{target_path.name}')
     try:
@@ -546,13 +475,20 @@ def _dump_and_verify_one(
         if options['lyric_mode'] == 'adapt' and language == 'en' and target_format == 'ustx':
             restore_english_ustx_lyrics(pending, sub_project)
         elif target_format == 'vsqx':
-            restore_vsqx_lyrics(pending, sub_project, language if options['lyric_mode'] == 'adapt' else 'zh')
+            vsqx_lang = language if options['lyric_mode'] == 'adapt' else 'zh'
+            if vsqx_lang == 'en' and not vsqx_english_dict_available(ROOT):
+                item_warnings.append(
+                    '当前环境未安装可选英文音素词典（vocal2midi），已跳过英文 VSQX 自动音素补写并保留原始歌词与音符。'
+                )
+                restore_vsqx_lyrics(pending, sub_project, 'zh')
+            else:
+                restore_vsqx_lyrics(pending, sub_project, vsqx_lang)
         if options['pitch_mode'] == 'strip' and target_format in ('ustx', 'svp', 'vsqx'):
             remove_pitch_data(pending, target_format)
 
         # Read-back verification before atomic commit
         verified = False
-        output_notes = source_notes
+        output_notes = loaded_notes
         line_count = 0
         if spec.group == 'lyrics':
             text = pending.read_text(encoding='utf-8-sig')
@@ -570,7 +506,7 @@ def _dump_and_verify_one(
             output_notes = sum(t.note_count for t in lay_out.tracks if not t.instrumental)
             verified = (output_notes == source_notes)
         elif spec.can_read:
-            reloaded = converter.load(pending, _build_input_options(target_format))
+            reloaded = _load_with_converter(converter, pending, target_format)
             output_notes = sum(
                 len(t.note_list) for t in reloaded.track_list if isinstance(t, SingingTrack)
             )
@@ -590,7 +526,7 @@ def _dump_and_verify_one(
         pending.unlink(missing_ok=True)
 
     return {
-        'path': str(target_path),
+        'path': strip_extended_prefix(target_path),
         'fileName': target_path.name,
         'trackNames': track_names,
         'sourceNotes': source_notes,
@@ -599,7 +535,7 @@ def _dump_and_verify_one(
         'verified': verified,
         'sizeBytes': target_path.stat().st_size,
         'sha256': file_hash(target_path),
-    }
+    }, item_warnings
 
 
 def _handle_convert(payload: dict[str, Any]) -> dict[str, Any]:
@@ -638,31 +574,41 @@ def _handle_convert(payload: dict[str, Any]) -> dict[str, Any]:
     inst_tracks = all_insts if (options['include_instrumental'] and target_spec.supports_instrumental) else []
 
     results = []
+    warnings: list[str] = []
+    expected_list = payload.get('expected_source_notes') or []
     if options['split_tracks'] and len(chosen_vocals) > 1:
-        for vocal, plan in zip(chosen_vocals, planned_outputs, strict=True):
+        for idx, (vocal, plan) in enumerate(zip(chosen_vocals, planned_outputs, strict=True)):
             sub = project.model_copy(update={'track_list': [vocal, *inst_tracks]})
-            results.append(
-                _dump_and_verify_one(
-                    sub,
-                    Path(plan['path']),
-                    target_format,
-                    language=language,
-                    options=options,
-                    source_stem=source_path.stem,
-                )
-            )
-    else:
-        sub = project.model_copy(update={'track_list': [*chosen_vocals, *inst_tracks]})
-        results.append(
-            _dump_and_verify_one(
+            exp_n = expected_list[idx] if idx < len(expected_list) else None
+            row, warns = _dump_and_verify_one(
                 sub,
-                Path(planned_outputs[0]['path']),
+                Path(plan['path']),
                 target_format,
                 language=language,
                 options=options,
                 source_stem=source_path.stem,
+                expected_source_notes=exp_n,
             )
+            results.append(row)
+            for w in warns:
+                if w not in warnings:
+                    warnings.append(w)
+    else:
+        sub = project.model_copy(update={'track_list': [*chosen_vocals, *inst_tracks]})
+        exp_total = sum(expected_list) if expected_list else None
+        row, warns = _dump_and_verify_one(
+            sub,
+            Path(planned_outputs[0]['path']),
+            target_format,
+            language=language,
+            options=options,
+            source_stem=source_path.stem,
+            expected_source_notes=exp_total,
         )
+        results.append(row)
+        for w in warns:
+            if w not in warnings:
+                warnings.append(w)
 
     # Honest preserved vs omitted summary
     preserved: list[str] = ['速度表与拍号']
@@ -686,12 +632,11 @@ def _handle_convert(payload: dict[str, Any]) -> dict[str, Any]:
         else:
             omitted.append(f'伴奏轨（{target_spec.short_label} 格式不含伴奏轨）')
 
-    warnings: list[str] = []
     if not all(r['verified'] for r in results):
         warnings.append('部分输出文件的回读音符数与源轨道存在差异（可能因目标格式合并/截断重叠音符），请在目标软件中复核。')
 
     return {
-        'sourcePath': str(source_path),
+        'sourcePath': strip_extended_prefix(source_path),
         'sourceFormat': source_format,
         'sourceLabel': source_spec.label,
         'targetFormat': target_format,
@@ -699,7 +644,7 @@ def _handle_convert(payload: dict[str, Any]) -> dict[str, Any]:
         'targetGroup': target_spec.group,
         'readerEngine': reader_engine,
         'detectedLanguage': language,
-        'outputDir': payload['output_dir'],
+        'outputDir': strip_extended_prefix(payload['output_dir']),
         'outputs': results,
         'preserved': preserved,
         'omitted': omitted,
@@ -720,9 +665,10 @@ def main(argv: list[str]) -> int:
         res_path.write_text(json.dumps({'ok': True, 'result': result}, ensure_ascii=False), encoding='utf-8')
         return 0
     except Exception as exc:
+        src_name = Path(payload.get('path') or payload.get('source_path') or '').name if 'payload' in locals() else ''
         res_path.write_text(
             json.dumps(
-                {'ok': False, 'error': str(exc) or type(exc).__name__, 'traceback': traceback.format_exc()},
+                {'ok': False, 'error': friendly_project_error(exc, file_name=src_name), 'traceback': traceback.format_exc()},
                 ensure_ascii=False,
             ),
             encoding='utf-8',

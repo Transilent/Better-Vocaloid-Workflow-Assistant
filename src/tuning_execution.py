@@ -133,5 +133,8 @@ def dependencies(options,contributors,root):
         for row in spec['tracks'].values():paths.extend((Path(row['baseline']),*(Path(p['audio']) for p in row['probes'])))
     actual={str(p.resolve()):file_hash(p) for p in sorted(set(paths))}
     for path,digest in expected.items():check_render_digest(path,actual[path],digest)
-    return {'files':actual,
-            'code':{name:file_hash(root/name) for name in contributors}}
+    code = {
+        (item[0] if isinstance(item, tuple) else item): file_hash(item[1] if isinstance(item, tuple) else root / item)
+        for item in contributors
+    }
+    return {'files': actual, 'code': code}

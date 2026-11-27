@@ -14,6 +14,7 @@ Item {
     readonly property var src: view.source || ({})
     readonly property var receipt: view.receipt || ({})
     readonly property real s: theme.scale || 1.0
+    readonly property bool sideBySide: width >= Math.round(700 * s)
     property bool showExtendedFormats: false
     property bool dropHover: false
 
@@ -154,19 +155,57 @@ Item {
             }
         }
 
-        // Active two-column converter workspace
-        RowLayout {
+        // Empty-state error / runtime notice banner (visible when dropping corrupt/unsupported files)
+        Rectangle {
+            objectName: "convertEmptyNotice"
+            visible: !page.view.hasSource && ((page.view.notice || "").length > 0 || !page.view.runtimeAvailable)
+            Layout.fillWidth: true
+            implicitHeight: emptyNoticeRow.implicitHeight + Math.round(16 * page.s)
+            radius: page.theme.radiusMd
+            color: page.theme.raised
+            border.width: 1
+            border.color: (page.view.error || !page.view.runtimeAvailable) ? page.theme.error : page.theme.line
+
+            RowLayout {
+                id: emptyNoticeRow
+                anchors.fill: parent
+                anchors.margins: Math.round(10 * page.s)
+                spacing: Math.round(8 * page.s)
+                UiIcon {
+                    width: Math.round(15 * page.s)
+                    height: width
+                    glyph: "info_circle"
+                    tint: (page.view.error || !page.view.runtimeAvailable) ? page.theme.error : page.theme.attention
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: !page.view.runtimeAvailable
+                        ? page.vwaTr("缺少工程互转运行库（dependencies/export），请在完整安装环境中运行。")
+                        : (page.view.busy ? (page.view.busyDetail || page.vwaTr("处理中…")) : (page.view.notice || ""))
+                    color: (page.view.error || !page.view.runtimeAvailable) ? page.theme.error : page.theme.text
+                    font.pixelSize: page.theme.fontSm
+                    wrapMode: Text.Wrap
+                    textFormat: Text.PlainText
+                }
+            }
+        }
+
+        // Active responsive converter workspace (2-column wide, 1-column stacked on narrow/high-DPI)
+        GridLayout {
             visible: !!page.view.hasSource
             Layout.fillWidth: true
             Layout.fillHeight: true
-            spacing: Math.round(14 * page.s)
+            columns: page.sideBySide ? 2 : 1
+            columnSpacing: Math.round(14 * page.s)
+            rowSpacing: Math.round(12 * page.s)
 
             // Left column: source preflight summary + track selection + precheck advisories
             UiCard {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                Layout.preferredWidth: 44
-                Layout.minimumWidth: Math.round(280 * page.s)
+                Layout.preferredWidth: page.sideBySide ? 44 : 1
+                Layout.preferredHeight: page.sideBySide ? -1 : 40
+                Layout.minimumWidth: page.sideBySide ? Math.round(260 * page.s) : 0
                 theme: page.theme
                 highlighted: page.dropHover
 
@@ -277,6 +316,7 @@ Item {
                                 model: page.view.tracks || []
                                 delegate: Rectangle {
                                     required property var modelData
+                                    required property int index
                                     readonly property bool isVocal: modelData.kind === "vocal"
                                     Layout.fillWidth: true
                                     implicitHeight: trackRow.implicitHeight + Math.round(14 * page.s)
@@ -295,6 +335,7 @@ Item {
                                         spacing: Math.round(8 * page.s)
 
                                         UiCheckBox {
+                                            objectName: "convertTrackCheck_" + (isVocal ? modelData.vocalIndex : index)
                                             theme: page.theme
                                             visible: isVocal
                                             checked: !!modelData.selected
@@ -396,8 +437,9 @@ Item {
             UiCard {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                Layout.preferredWidth: 56
-                Layout.minimumWidth: Math.round(340 * page.s)
+                Layout.preferredWidth: page.sideBySide ? 56 : 1
+                Layout.preferredHeight: page.sideBySide ? -1 : 60
+                Layout.minimumWidth: page.sideBySide ? Math.round(320 * page.s) : 0
                 theme: page.theme
 
                 Flickable {
@@ -716,135 +758,13 @@ Item {
                         }
 
                         // Verified conversion receipt card
-                        Rectangle {
-                            objectName: "convertReceiptCard"
+                        ProjectConvertReceiptCard {
                             visible: !!page.view.hasReceipt
                             Layout.fillWidth: true
-                            implicitHeight: receiptCol.implicitHeight + Math.round(22 * page.s)
-                            radius: page.theme.radiusLg
-                            color: page.theme.raised
-                            border.width: 1
-                            border.color: page.theme.selectedLine
-
-                            ColumnLayout {
-                                id: receiptCol
-                                anchors.fill: parent
-                                anchors.margins: Math.round(12 * page.s)
-                                spacing: Math.round(8 * page.s)
-
-                                RowLayout {
-                                    Layout.fillWidth: true
-                                    spacing: Math.round(6 * page.s)
-                                    UiIcon {
-                                        width: Math.round(15 * page.s)
-                                        height: width
-                                        glyph: "check"
-                                        tint: page.theme.success
-                                    }
-                                    Text {
-                                        Layout.fillWidth: true
-                                        text: page.vwaTr("转换完成 · 已自动回读校验")
-                                        color: page.theme.text
-                                        font.pixelSize: page.theme.fontBody
-                                        font.weight: Font.DemiBold
-                                        textFormat: Text.PlainText
-                                    }
-                                    UiButton {
-                                        objectName: "convertOpenOutputFolder"
-                                        theme: page.theme
-                                        quiet: true
-                                        leadingGlyph: "folder"
-                                        leadingIconSize: 13
-                                        implicitHeight: Math.round(28 * page.s)
-                                        text: page.vwaTr("打开文件夹")
-                                        onClicked: page.controller.openFolder(page.receipt.outputDir || "")
-                                    }
-                                }
-
-                                // Output file rows with one-click handoff
-                                Repeater {
-                                    model: page.receipt.outputs || []
-                                    delegate: Rectangle {
-                                        required property var modelData
-                                        Layout.fillWidth: true
-                                        implicitHeight: outRow.implicitHeight + Math.round(12 * page.s)
-                                        radius: page.theme.radiusMd
-                                        color: page.theme.surface
-                                        border.width: 1
-                                        border.color: page.theme.lineSubtle
-
-                                        RowLayout {
-                                            id: outRow
-                                            anchors.fill: parent
-                                            anchors.margins: Math.round(8 * page.s)
-                                            spacing: Math.round(8 * page.s)
-
-                                            ColumnLayout {
-                                                Layout.fillWidth: true
-                                                spacing: 2
-                                                Text {
-                                                    Layout.fillWidth: true
-                                                    text: modelData.fileName || ""
-                                                    color: page.theme.text
-                                                    font.pixelSize: page.theme.fontSm
-                                                    font.weight: Font.DemiBold
-                                                    elide: Text.ElideMiddle
-                                                    textFormat: Text.PlainText
-                                                }
-                                                Text {
-                                                    Layout.fillWidth: true
-                                                    text: page.receipt.targetGroup === "lyrics"
-                                                        ? ((modelData.lineCount || 0) + " " + page.vwaTr("行歌词") + " · " + page.formatBytes(modelData.sizeBytes))
-                                                        : (page.vwaTr("源 ") + (modelData.sourceNotes || 0) + " → " + page.vwaTr("输出 ") + (modelData.outputNotes || 0) + " " + page.vwaTr("音符")
-                                                            + (modelData.verified ? (" · " + page.vwaTr("一致")) : (" · " + page.vwaTr("请复核")))
-                                                            + " · " + page.formatBytes(modelData.sizeBytes))
-                                                    color: modelData.verified ? page.theme.success : page.theme.attention
-                                                    font.pixelSize: page.theme.fontXs
-                                                    elide: Text.ElideRight
-                                                    textFormat: Text.PlainText
-                                                }
-                                            }
-
-                                            UiButton {
-                                                visible: !!page.receipt.canSendToTuning
-                                                theme: page.theme
-                                                quiet: true
-                                                implicitHeight: Math.round(28 * page.s)
-                                                text: page.vwaTr("送入调音")
-                                                onClicked: page.controller.sendToTuning(modelData.path || "")
-                                            }
-                                            UiButton {
-                                                visible: !!page.receipt.canSendToChorus
-                                                theme: page.theme
-                                                quiet: true
-                                                implicitHeight: Math.round(28 * page.s)
-                                                text: page.vwaTr("作修音参考谱")
-                                                onClicked: page.controller.sendToChorusScore(modelData.path || "")
-                                            }
-                                        }
-                                    }
-                                }
-
-                                // Preserved vs omitted transparent notes
-                                Text {
-                                    Layout.fillWidth: true
-                                    visible: (page.receipt.preserved || []).length > 0
-                                    text: page.vwaTr("已保留：") + (page.receipt.preserved || []).join("；")
-                                    color: page.theme.text
-                                    font.pixelSize: page.theme.fontXs
-                                    wrapMode: Text.Wrap
-                                    textFormat: Text.PlainText
-                                }
-                                Text {
-                                    Layout.fillWidth: true
-                                    visible: (page.receipt.omitted || []).length > 0
-                                    text: page.vwaTr("未迁移（格式差异）：") + (page.receipt.omitted || []).join("；")
-                                    color: page.theme.muted
-                                    font.pixelSize: page.theme.fontXs
-                                    wrapMode: Text.Wrap
-                                    textFormat: Text.PlainText
-                                }
-                            }
+                            theme: page.theme
+                            controller: page.controller
+                            receipt: page.receipt
+                            s: page.s
                         }
                     }
                 }

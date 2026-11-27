@@ -207,6 +207,7 @@ Rectangle {
 
         ColumnLayout {
             id: audioDeviceBox
+            objectName: "audioOutputDeviceSection"
             Layout.fillWidth: true
             spacing: 5
             readonly property QtObject uxApi: typeof window !== "undefined" && window.controller ? window.controller.ux : null
@@ -220,6 +221,7 @@ Rectangle {
                     font.pixelSize: Math.round(12 * page.theme.scale)
                 }
                 UiButton {
+                    objectName: "refreshAudioDevices"
                     theme: page.theme
                     quiet: true
                     implicitHeight: Math.round(24 * page.theme.scale)
@@ -234,6 +236,8 @@ Rectangle {
                     model: audioDeviceBox.uxApi ? audioDeviceBox.uxApi.audioOutputDevices : []
                     SettingsChoiceChip {
                         required property var modelData
+                        required property int index
+                        objectName: "audioOutputDevice_" + index
                         tokens: page.theme
                         text: modelData.label || page.tr("跟随系统默认")
                         selected: audioDeviceBox.uxApi

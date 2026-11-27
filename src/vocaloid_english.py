@@ -1,5 +1,6 @@
 """Read the bundled CMU lexicon and produce VOCALOID English phonemes."""
 
+import os
 from functools import lru_cache
 from pathlib import Path
 import re
@@ -75,12 +76,23 @@ def _syllables(phones):
     return tuple(syllables)
 
 
+def resolve_dictionary_path() -> Path | None:
+    candidates = [ROOT / DICTIONARY_PATH]
+    explicit = os.environ.get('VWA_EXPORT_RUNTIME', '').strip()
+    if explicit:
+        candidates.append(Path(explicit).parent.parent / DICTIONARY_PATH)
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
 def syllables_for(lyric, count=None):
     """Return onset, vowel and coda for each syllable, using an attested variant."""
     word = normalize_english_punctuation(lyric).strip().casefold()
     if not re.fullmatch(_WORD, word):
         return ()
-    path = ROOT / DICTIONARY_PATH
+    path = resolve_dictionary_path() or (ROOT / DICTIONARY_PATH)
     metadata = path.stat()
     dictionary = _dictionary(path, metadata.st_mtime_ns, metadata.st_size)
     variants = dictionary.get(word)

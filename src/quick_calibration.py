@@ -14,6 +14,7 @@ from calibration_preparation import prepare_in_worker
 from common import file_hash
 from expression_calibration import CONTROLS
 from i18n import tr
+from project_convert_compat import strip_extended_prefix
 from quick_work import WorkerLane
 
 
@@ -466,7 +467,7 @@ class QuickCalibration(QObject):
             local.update(trial=session.parent / 'calibration.svp', folder=session.parent)
         if local.get(kind):
             path = Path(local[kind])
-            if not path.exists() or not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+            if not path.exists() or not QDesktopServices.openUrl(QUrl.fromLocalFile(strip_extended_prefix(str(path)))):
                 self.message = tr('系统无法打开，请按显示的路径手动打开。')
                 self.changed.emit()
         elif not self.worker.kind and self.result and kind in ('output', 'neutral', 'report_path'):
@@ -476,7 +477,7 @@ class QuickCalibration(QObject):
                 if not result or not result.get(kind):
                     self.result = result
                     raise ValueError('校准结果或基准工程已改变，请重新核对。')
-                if not QDesktopServices.openUrl(QUrl.fromLocalFile(result[kind])):
+                if not QDesktopServices.openUrl(QUrl.fromLocalFile(strip_extended_prefix(str(result[kind])))):
                     raise ValueError('系统无法打开，请在 SV 或文件管理器中手动打开。')
                 self.message = self._result_message()
 

@@ -554,122 +554,13 @@ Item {
         RowLayout {
             Layout.fillWidth: true
             spacing: Math.round(7 * page.theme.scale)
-
+            Text { text: page.vwaTr("简易混音"); color: page.theme.text; font.pixelSize: Math.round(17 * page.theme.scale); font.weight: Font.DemiBold }
+            Rectangle { visible: !page.compact; width: Math.round(7 * page.theme.scale); height: width; radius: width / 2; color: page.busy ? page.theme.attention : page.theme.success }
             Text {
-                text: page.vwaTr("简易混音")
-                color: page.theme.text
-                font.pixelSize: Math.round(17 * page.theme.scale)
-                font.weight: Font.DemiBold
-            }
-            Rectangle {
-                visible: !page.compact
-                width: Math.round(7 * page.theme.scale)
-                height: width
-                radius: width / 2
-                color: page.busy ? page.theme.attention : page.theme.success
-            }
-            Text {
-                Layout.fillWidth: true
+                Layout.fillWidth: true; Layout.minimumWidth: 0
                 visible: !page.compact
                 text: page.textValue(page.view.job, page.vwaTr("独立 WAV · 无需先创建任务"))
-                color: page.theme.muted
-                font.pixelSize: Math.round(11 * page.theme.scale)
-                elide: Text.ElideMiddle
-            }
-            UiButton {
-                objectName: "mixdownShowMixer"
-                visible: page.compact && !page.expanded
-                theme: page.theme
-                quiet: true
-                selected: page.compactPanel === "mixer"
-                text: page.vwaTr("混音台")
-                onClicked: page.compactPanel = "mixer"
-            }
-            UiButton {
-                objectName: "mixdownShowAnalysis"
-                visible: page.compact && !page.expanded
-                theme: page.theme
-                quiet: true
-                selected: page.compactPanel === "analysis"
-                text: page.vwaTr("曲线")
-                Accessible.name: page.vwaTr("曲线与效果")
-                onClicked: page.compactPanel = "analysis"
-            }
-            UiButton {
-                objectName: "mixdownShowPresets"
-                visible: page.compact && !page.expanded
-                theme: page.theme
-                quiet: true
-                selected: page.showCompactPresets
-                text: page.vwaTr("预设")
-                onClicked: page.showCompactPresets = !page.showCompactPresets
-            }
-            UiButton {
-                objectName: "mixdownAddTrackCompact"
-                visible: page.compact && !page.expanded && page.compactPanel === "mixer"
-                theme: page.theme
-                glyph: "plus"
-                text: page.vwaTr("添加歌声轨")
-                enabled: page.canAddTrack && !page.busy && !page.loading
-                onClicked: page.controller.addTrack()
-            }
-            Item { visible: page.compact; Layout.fillWidth: true }
-
-            // Inline preset picker + grouped preset menu (collapses old 2nd header row)
-            UiComboBox {
-                id: presetCombo
-                objectName: "mixdownPreset"
-                visible: !page.expanded && !page.compact
-                Layout.preferredWidth: Math.round(188 * page.theme.scale)
-                Layout.preferredHeight: Math.round(30 * page.theme.scale)
-                theme: page.theme
-                model: page.presets
-                currentIndex: page.presetIndex(page.view.presetName)
-                enabled: page.presets.length > 0 && !page.busy && !page.loading
-                Accessible.name: page.vwaTr("混音预设")
-                onActivated: page.reviewPreset(String(currentValue || ""))
-            }
-            UiButton {
-                objectName: "mixdownUndoPreset"
-                theme: page.theme
-                implicitHeight: Math.round(30 * page.theme.scale)
-                quiet: true
-                visible: !page.expanded && !!page.view.canUndoPreset
-                enabled: !page.busy && !page.loading
-                text: page.vwaTr("撤销预设")
-                onClicked: page.controller.undoPreset()
-            }
-            UiButton {
-                theme: page.theme
-                implicitHeight: Math.round(30 * page.theme.scale)
-                quiet: true
-                visible: !page.expanded && !page.compact
-                enabled: !page.busy && !page.loading
-                text: page.vwaTr("预设") + " ▾"
-                onClicked: mixdownPresetMenu.popup()
-                UiMenu {
-                    id: mixdownPresetMenu
-                    theme: page.theme
-                    MenuItem {
-                        objectName: "mixdownSavePreset"
-                        text: page.vwaTr("另存当前为预设…")
-                        enabled: !page.busy && !page.loading
-                        onTriggered: savePresetDialog.open()
-                    }
-                    MenuSeparator {}
-                    MenuItem {
-                        objectName: "mixdownImportPresets"
-                        text: page.vwaTr("导入预设…")
-                        enabled: !page.busy && !page.loading
-                        onTriggered: page.openManagedDialog(importPresetDialog)
-                    }
-                    MenuItem {
-                        objectName: "mixdownExportPreset"
-                        text: page.vwaTr("导出当前预设…")
-                        enabled: !page.busy && !page.loading && page.currentPresetKey().length > 0
-                        onTriggered: page.openManagedDialog(exportPresetDialog)
-                    }
-                }
+                color: page.theme.muted; font.pixelSize: Math.round(11 * page.theme.scale); elide: Text.ElideMiddle
             }
             Text {
                 visible: page.resultText(page.view.result).length > 0
@@ -677,15 +568,60 @@ Item {
                 color: page.view.resultStale ? page.theme.attention : page.theme.success
                 font.pixelSize: Math.round(11 * page.theme.scale)
             }
+        }
+        Flow {
+            Layout.fillWidth: true
+            Layout.minimumWidth: 0
+            spacing: Math.round(6 * page.theme.scale)
             UiButton {
-                objectName: "mixdownInstallComponents"
-                visible: !!page.view.componentMissing && !page.busy
-                theme: page.theme
-                implicitHeight: Math.round(30 * page.theme.scale)
-                primary: true
-                text: page.vwaTr("安装混音组件")
-                enabled: !page.busy
-                onClicked: page.controller.installMixdown()
+                objectName: "mixdownShowMixer"; visible: page.compact && !page.expanded
+                theme: page.theme; quiet: true; selected: page.compactPanel === "mixer"
+                text: page.vwaTr("混音台"); onClicked: page.compactPanel = "mixer"
+            }
+            UiButton {
+                objectName: "mixdownShowAnalysis"; visible: page.compact && !page.expanded
+                theme: page.theme; quiet: true; selected: page.compactPanel === "analysis"
+                text: page.vwaTr("曲线"); Accessible.name: page.vwaTr("曲线与效果"); onClicked: page.compactPanel = "analysis"
+            }
+            UiButton {
+                objectName: "mixdownShowPresets"; visible: page.compact && !page.expanded
+                theme: page.theme; quiet: true; selected: page.showCompactPresets
+                text: page.vwaTr("预设"); onClicked: page.showCompactPresets = !page.showCompactPresets
+            }
+            UiButton {
+                objectName: "mixdownAddTrackCompact"; visible: page.compact && !page.expanded && page.compactPanel === "mixer"
+                theme: page.theme; glyph: "plus"; text: page.vwaTr("添加歌声轨")
+                enabled: page.canAddTrack && !page.busy && !page.loading; onClicked: page.controller.addTrack()
+            }
+            // Inline preset picker + grouped preset menu (wraps cleanly in EN/JA & compact DPI)
+            UiComboBox {
+                id: presetCombo; objectName: "mixdownPreset"; visible: !page.expanded && !page.compact
+                width: Math.round(188 * page.theme.scale); height: Math.round(30 * page.theme.scale)
+                theme: page.theme; model: page.presets; currentIndex: page.presetIndex(page.view.presetName)
+                enabled: page.presets.length > 0 && !page.busy && !page.loading
+                Accessible.name: page.vwaTr("混音预设"); onActivated: page.reviewPreset(String(currentValue || ""))
+            }
+            UiButton {
+                objectName: "mixdownUndoPreset"; theme: page.theme; implicitHeight: Math.round(30 * page.theme.scale)
+                quiet: true; visible: !page.expanded && !!page.view.canUndoPreset
+                enabled: !page.busy && !page.loading; text: page.vwaTr("撤销预设"); onClicked: page.controller.undoPreset()
+            }
+            UiButton {
+                theme: page.theme; implicitHeight: Math.round(30 * page.theme.scale); quiet: true
+                visible: !page.expanded && !page.compact; enabled: !page.busy && !page.loading
+                text: page.vwaTr("预设") + " ▾"; onClicked: mixdownPresetMenu.popup()
+                UiMenu {
+                    id: mixdownPresetMenu; theme: page.theme
+                    MenuItem { objectName: "mixdownSavePreset"; text: page.vwaTr("另存当前为预设…"); enabled: !page.busy && !page.loading; onTriggered: savePresetDialog.open() }
+                    MenuSeparator {}
+                    MenuItem { objectName: "mixdownImportPresets"; text: page.vwaTr("导入预设…"); enabled: !page.busy && !page.loading; onTriggered: page.openManagedDialog(importPresetDialog) }
+                    MenuItem { objectName: "mixdownExportPreset"; text: page.vwaTr("导出当前预设…"); enabled: !page.busy && !page.loading && page.currentPresetKey().length > 0; onTriggered: page.openManagedDialog(exportPresetDialog) }
+                }
+            }
+            UiButton {
+                objectName: "mixdownInstallComponents"; visible: !!page.view.componentMissing && !page.busy
+                theme: page.theme; implicitHeight: Math.round(30 * page.theme.scale); primary: true
+                text: page.vwaTr("安装混音组件"); enabled: !page.busy; onClicked: page.controller.installMixdown()
                 Accessible.description: page.vwaTr("使用随包 manifest 与安装器离线安装已固定的混音组件")
             }
         }
@@ -1117,8 +1053,9 @@ Item {
             anchors.bottomMargin: Math.round(6 * page.theme.scale)
             spacing: 0
 
-            RowLayout {
+            Flow {
                 Layout.fillWidth: true
+                Layout.minimumWidth: 0
                 spacing: Math.round(6 * page.theme.scale)
                 UiButton {
                     objectName: "mixdownPlayPause"
@@ -1191,14 +1128,12 @@ Item {
                     onClicked: page.controller.toggleLoudnessMatch()
                 }
                 Text {
+                    height: Math.round(30 * page.theme.scale)
+                    verticalAlignment: Text.AlignVCenter
                     text: page.timeText(page.shownPositionMs) + " / " + page.timeText(page.durationMs)
                     color: page.theme.text
                     font.pixelSize: Math.round(11 * page.theme.scale)
                     font.family: "Consolas"
-                }
-                Item {
-                    Layout.fillWidth: true
-                    Layout.minimumWidth: 0
                 }
                 UiButton {
                     visible: page.busy || page.loading

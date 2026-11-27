@@ -32,6 +32,7 @@ from quick_work import WorkerLane
 import task_actions_service as _task_actions
 from workspace_controller import WorkspaceController
 from workspace_settings import component_source_preferences, save_component_source_preferences
+from vwa_paths import strip_extended_prefix
 import workflow
 
 
@@ -299,6 +300,8 @@ class QuickBridge(QObject):
                 self._workshop.cancel()
             elif kind.startswith('chorus-'):
                 self._chorus.cancel()
+            elif kind.startswith('convert-'):
+                self._converter.cancel()
             elif kind.startswith('tuning-'):
                 self._tuning.cancel()
             elif kind in ('mixdown-export', 'mixdown-install', 'mixdown-support-probe'):
@@ -828,7 +831,11 @@ class QuickBridge(QObject):
 
     def _update_draft(self, call, *, persist=False):
         try:
-            if call():
+            changed = call()
+            if self._notice:
+                self._notice = ''
+                self.activityChanged.emit()
+            if changed:
                 self.draftChanged.emit()
                 if persist:
                     preparation.save_draft_settings(self.state.draft)
@@ -877,12 +884,8 @@ class QuickBridge(QObject):
 
     @Slot(str)
     def setPreparationMusicPath(self, path):
-        try:
-            value = str(path).strip().strip('"')
-            if self.state.set_music(value):
-                self.draftChanged.emit()
-        except (OSError, ValueError, TypeError) as exc:
-            self._error(exc)
+        value = str(path).strip().strip('"')
+        self._update_draft(lambda: self.state.set_music(value))
 
     @Slot(str)
     def applyPreparationPreset(self, key):
@@ -1772,7 +1775,7 @@ class QuickBridge(QObject):
             self._clear_work_task_lock()
 
     def _open_local(self, path):
-        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(strip_extended_prefix(path))):
             self._error(ValueError('系统无法打开此文件或目录。'))
 
     @Slot(str)

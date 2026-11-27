@@ -5,9 +5,9 @@ from contextlib import contextmanager
 from dataclasses import replace
 import os
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Any, Callable
 
+from chorus_model_worker import resilient_tempdir
 from chorus_pitch_dsp import signalsmith_available
 from chorus_precision import mapped_time, phrase_for
 
@@ -27,10 +27,10 @@ def _analysis_sources(project, rows, cache, features, check, send):
     from chorus_audio import analysis_recording, recording_key
 
     audio, measured, added = {}, {}, {}
-    with TemporaryDirectory(dir=cache, prefix='sources-') as folder:
+    with resilient_tempdir(cache, 'sources-') as folder:
         for index, track in enumerate(rows):
             check()
-            source = analysis_recording(project, track, Path(folder), check)
+            source = analysis_recording(project, track, folder, check)
             key = recording_key(project, track)
             audio[track.id] = source
             if features is None:

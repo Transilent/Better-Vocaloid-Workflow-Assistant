@@ -30,25 +30,24 @@ Item {
     readonly property bool canCancel: page.boolValue(view.canCancel, false)
     readonly property bool taskScanBusy: page.boolValue(view.taskScanBusy, false)
     readonly property bool canRefreshTasks: page.boolValue(view.canRefreshTasks, false)
-    readonly property bool sourceAvailable: page.boolValue(
-        view.sourceAvailable, page.sourceText.length > 0)
-    readonly property bool mixdownAvailable: page.boolValue(
-        view.mixdownAvailable, page.mixdownText.length > 0)
+    readonly property bool sourceAvailable: page.boolValue(view.sourceAvailable, page.sourceText.length > 0)
+    readonly property bool sourceIsImage: page.boolValue(view.sourceIsImage, false)
+    readonly property bool mixdownAvailable: page.boolValue(view.mixdownAvailable, page.mixdownText.length > 0)
     readonly property bool autoNeedsManual: page.boolValue(view.autoNeedsManual, false)
     readonly property bool hasResult: page.resultValue()
     readonly property string taskTitleText: page.textOf(view.taskTitle)
     readonly property string restoredSourceBv: page.textOf(view.sourceBv)
     readonly property string restoreMessageText: page.textOf(view.restoreMessage)
-    readonly property bool sideBySide: page.width >= Math.round(980 * Math.min(1.2, page.theme.scale))
+    readonly property real layoutScale: Math.min(1.15, page.theme.scale)
+    readonly property bool sideBySide: page.width >= Math.round(900 * page.layoutScale)
     readonly property bool narrow: page.width < Math.round(700 * page.theme.scale)
     readonly property int pageMargin: Math.round((page.narrow ? 11 : 14) * page.theme.scale)
     readonly property int cardPadding: Math.round((page.narrow ? 10 : 12) * page.theme.scale)
     readonly property int contentAvailableWidth: Math.max(0, page.width - page.pageMargin * 2)
     readonly property int contentMaxWidth: Math.round(1360 * page.theme.scale)
     readonly property int workspaceWidth: Math.min(page.contentAvailableWidth, page.contentMaxWidth)
-    readonly property int inspectorWidth: Math.min(
-        Math.round(410 * page.theme.scale),
-        Math.max(Math.round(326 * page.theme.scale), Math.round(page.workspaceWidth * 0.30)))
+    readonly property int inspectorWidth: Math.min(Math.round(380 * page.layoutScale),
+        Math.max(Math.round(280 * page.layoutScale), Math.round(page.workspaceWidth * 0.34)))
     readonly property int footerHeight: Math.round(72 * page.theme.scale)
     readonly property string primaryAction: page.choosePrimaryAction()
     readonly property string statusLine: page.textOf(view.message).length > 0
@@ -65,30 +64,24 @@ Item {
     }
 
     function textOf(value) {
-        if (value === undefined || value === null)
-            return ""
-        if (typeof value === "string")
-            return value
-        if (typeof value === "number" || typeof value === "boolean")
-            return String(value)
+        if (value === undefined || value === null) return ""
+        if (typeof value === "string") return value
+        if (typeof value === "number" || typeof value === "boolean") return String(value)
         if (typeof value === "object") {
             const keys = ["output", "path", "file", "summary", "message", "text", "label"]
             for (let index = 0; index < keys.length; ++index) {
                 const candidate = value[keys[index]]
-                if (candidate !== undefined && candidate !== null && String(candidate).length > 0)
-                    return String(candidate)
+                if (candidate !== undefined && candidate !== null && String(candidate).length > 0) return String(candidate)
             }
         }
         return ""
     }
 
     function boolValue(value, fallback) {
-        if (value === undefined || value === null)
-            return fallback
+        if (value === undefined || value === null) return fallback
         if (typeof value === "string") {
-            const normalized = value.toLowerCase()
-            return normalized !== "" && normalized !== "0" && normalized !== "false"
-                && normalized !== "off" && normalized !== "no"
+            const n = value.toLowerCase()
+            return n !== "" && n !== "0" && n !== "false" && n !== "off" && n !== "no"
         }
         return Boolean(value)
     }
@@ -502,17 +495,19 @@ Item {
                 }
             }
 
-            RowLayout {
+            GridLayout {
                 Layout.fillWidth: true
-                Layout.fillHeight: true
-                Layout.minimumHeight: Math.round(510 * page.theme.scale)
-                spacing: Math.round(13 * page.theme.scale)
+                Layout.fillHeight: page.sideBySide
+                columns: page.sideBySide ? 2 : 1
+                columnSpacing: Math.round(13 * page.layoutScale)
+                rowSpacing: Math.round(12 * page.layoutScale)
 
                 Rectangle {
                     Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    Layout.minimumWidth: Math.round(520 * page.theme.scale)
-                    Layout.minimumHeight: Math.round(500 * page.theme.scale)
+                    Layout.fillHeight: page.sideBySide
+                    Layout.minimumWidth: page.sideBySide ? Math.round(360 * page.layoutScale) : 0
+                    Layout.minimumHeight: Math.round((page.sideBySide ? 480 : 320) * page.layoutScale)
+                    Layout.preferredHeight: page.sideBySide ? -1 : Math.round(360 * page.layoutScale)
                     color: page.theme.surface
                     radius: Math.round(11 * page.theme.scale)
                     border.width: 1
@@ -607,7 +602,7 @@ Item {
                                 onFilesDropped: urls => {
                                     for (let i = 0; i < urls.length; ++i) {
                                         const lower = String(urls[i] || "").toLowerCase()
-                                        if (/\.(mp4|mov|mkv|webm|avi)$/.test(lower))
+                                        if (/\.(mp4|mov|mkv|webm|avi|png|jpg|jpeg|webp|bmp)$/.test(lower))
                                             page.controller.chooseFile("sourceVideo", urls[i])
                                         else if (/\.(wav|flac|mp3|m4a|aac|ogg)$/.test(lower))
                                             page.controller.chooseFile("mixdown", urls[i])
@@ -728,9 +723,11 @@ Item {
                 }
 
                 Rectangle {
-                    Layout.preferredWidth: page.inspectorWidth
-                    Layout.minimumWidth: Math.round(304 * page.theme.scale)
-                    Layout.fillHeight: true
+                    Layout.fillWidth: !page.sideBySide
+                    Layout.preferredWidth: page.sideBySide ? page.inspectorWidth : -1
+                    Layout.minimumWidth: page.sideBySide ? Math.round(280 * page.layoutScale) : 0
+                    Layout.fillHeight: page.sideBySide
+                    Layout.preferredHeight: page.sideBySide ? -1 : inspectorCol.implicitHeight + Math.round(24 * page.theme.scale)
                     color: page.theme.surface
                     radius: Math.round(11 * page.theme.scale)
                     border.width: 1
@@ -743,9 +740,10 @@ Item {
                         contentWidth: availableWidth
                         clip: true
                         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
-                        ScrollBar.vertical.policy: ScrollBar.AsNeeded
+                        ScrollBar.vertical.policy: page.sideBySide ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff
 
                         ColumnLayout {
+                            id: inspectorCol
                             width: inspectorScroll.availableWidth
                             spacing: Math.round(10 * page.theme.scale)
 
@@ -973,7 +971,7 @@ Item {
                                     objectName: "videoAutoAlign"
                                     Layout.fillWidth: true
                                     theme: page.theme
-                                    enabled: !page.busy
+                                    enabled: !page.busy && !page.sourceIsImage
                                     model: [
                                         { label: page.tr("自动匹配"), value: true },
                                         { label: page.tr("手动偏移"), value: false }
@@ -1531,7 +1529,7 @@ Item {
         title: page.tr("选择原视频")
         fileMode: FileDialog.OpenFile
         nameFilters: [
-            page.tr("视频文件") + " (*.mp4 *.mov *.mkv *.webm *.avi)",
+            page.tr("视频文件") + " (*.mp4 *.mov *.mkv *.webm *.avi *.png *.jpg *.jpeg *.webp *.bmp)",
             page.tr("所有文件") + " (*)"
         ]
         onAccepted: page.controller.chooseFile("sourceVideo", selectedFile)

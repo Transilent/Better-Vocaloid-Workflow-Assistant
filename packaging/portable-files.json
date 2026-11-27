@@ -18,6 +18,10 @@
       "source": "src/project_convert_worker.py"
     },
     {
+      "file": "project_convert_compat.py",
+      "source": "src/project_convert_compat.py"
+    },
+    {
       "file": "chorus_review_service.py",
       "source": "src/chorus_review_service.py"
     },
@@ -80,6 +84,14 @@
     {
       "file": "quick_ui/ProjectConvertPage.qml",
       "source": "src/quick_ui/ProjectConvertPage.qml"
+    },
+    {
+      "file": "quick_ui/ProjectConvertReceiptCard.qml",
+      "source": "src/quick_ui/ProjectConvertReceiptCard.qml"
+    },
+    {
+      "file": "quick_ui/PreparationQueueCard.qml",
+      "source": "src/quick_ui/PreparationQueueCard.qml"
     },
     {
       "file": "quick_ui/ChorusTimeline.qml",

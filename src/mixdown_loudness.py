@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from vwa_io import resilient_tempdir
 
 from mixdown_metering import (
     INTEGRATION_SECONDS,
@@ -31,7 +31,7 @@ def compare_range(before, after, start_ms, end_ms, cache_dir, dll_path, cancel=N
 
     ffmpeg = _ffmpeg_executable()
     with ExitStack() as resources:
-        temporary = Path(resources.enter_context(TemporaryDirectory(prefix='vwa-mix-ab-', dir=work_dir)))
+        temporary = resources.enter_context(resilient_tempdir(work_dir, 'vwa-mix-ab-'))
         sessions = []
         for request in (before, after):
             _check_cancel(cancel)

@@ -23,7 +23,7 @@ def can_cancel(kind: str) -> bool:
         return False
     return (kind in ('component', 'preparation', 'update-download', 'mixdown-export',
                      'mixdown-install', 'mixdown-support-probe') or kind in _CANCELLABLE_TUNING
-            or kind.startswith(('calibration-', 'workshop-', 'video-', 'publication-', 'chorus-')))
+            or kind.startswith(('calibration-', 'workshop-', 'video-', 'publication-', 'chorus-', 'convert-')))
 
 
 def component_result(request, stop, send):

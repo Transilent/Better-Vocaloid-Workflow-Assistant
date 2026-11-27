@@ -5,6 +5,7 @@ import os
 import shutil
 from pathlib import Path
 from common import ROOT, atomic_json, job_directories, app_path, workspace_state, exclusive_sidecar
+from vwa_io import rmtree_checked
 
 INDEX_MAX_ENTRIES = 256
 INDEX_MAX_BYTES = 8 * 1024**2
@@ -169,7 +170,7 @@ def delete(job):
     if uses:
         raise ValueError('其他任务仍引用此目录中的文件，请先更换引用：' + str(uses[0][1]))
     checked_tree(job, job.parent)
-    shutil.rmtree(job)
+    rmtree_checked(job)
     last = ROOT/'last_job.txt'
     if last.exists() and app_path(last.read_text(encoding='utf-8').strip()) == job:
         last.unlink()

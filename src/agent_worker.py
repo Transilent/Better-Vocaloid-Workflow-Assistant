@@ -83,7 +83,7 @@ def dispatch(control, action, arguments):
     if action=='lyric_timeline_fetch':return fetch_lyric_timeline(arguments['song'])
     path = safe_path(arguments['path'], [control.state, *control.assets, *control.jobs])
     if action == 'workflow_review_dry_run':
-        import tempfile
+        from vwa_io import resilient_tempdir
         from agent_control import file_hash
         from agent_workflow import Workflow
         original = control.artifact(arguments['artifact_id'])
@@ -92,10 +92,10 @@ def dispatch(control, action, arguments):
         root = safe_path(arguments['temporary_root'], [control.state / 'calls'])
         temporary = root / 'review-candidates'
         temporary.mkdir()
-        with tempfile.TemporaryDirectory(dir=str(temporary), prefix='candidate-') as directory:
+        with resilient_tempdir(temporary, 'candidate-') as directory:
             result = Workflow(control)._execute_review_candidate(
                 {'request': arguments['request']}, original, arguments['arguments'],
-                Path(directory), lambda: None, lambda _message: None, dry_run=True)
+                directory, lambda: None, lambda _message: None, dry_run=True)
         if file_hash(path) != original['sha256']:
             raise ControlError('stale_artifact', '试运行期间源 MIDI 已改变。')
         return result

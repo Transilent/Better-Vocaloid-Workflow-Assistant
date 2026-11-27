@@ -5,12 +5,12 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-from tempfile import TemporaryDirectory
 from time import monotonic
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import ROOT, atomic_json, file_hash, load_config
 from process_control import terminate_tree
+from vwa_io import resilient_tempdir
 
 
 def _read(path):
@@ -47,8 +47,7 @@ def prepare_in_worker(project, reference, destination, *, stop, progress, track_
         raise FileExistsError('准备目录已存在，请换用新的目录。')
     cache = ROOT / 'cache/v2m-temp'
     cache.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(prefix='cal-', dir=cache) as folder:
-        control = Path(folder)
+    with resilient_tempdir(cache, 'cal-') as control:
         atomic_json(control / 'request.json', {
             'project': str(project), 'reference': str(reference), 'destination': str(dest),
             'track_index': track_index, 'template': str(template) if template else None,
