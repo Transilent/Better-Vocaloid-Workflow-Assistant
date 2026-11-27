@@ -36,9 +36,9 @@ def validate_options(options):
             result[key] = bool(result[kind + '_formats'])
         if type(result[key]) is not bool:
             raise ValueError('导出开关必须为开启或关闭。')
-    choices = {'language': LANGUAGES, 'voice_mode': ('dual', 'single', 'import', 'roformer'),
+    choices = {'language': LANGUAGES, 'voice_mode': ('dual', 'single', 'import', 'roformer', 'roformer_onnx'),
                'zh_lyric_mode': ('hanzi', 'pinyin'), 'midi_steps': (8, 16, 32),
-               'roformer_device': ('auto', 'cpu', 'cuda'),
+               'roformer_device': ('auto', 'cpu', 'cuda', 'webgpu'),
                'separation_device': ('cpu', 'dml'), 'midi_device': ('cpu', 'dml')}
     choices.update(midi_backend=('v1','v2'),alignment_engine=('hfa','tifa'))
     choices.update(reference_mode=('local','netease'),subtitles_mode=('midi','netease'))

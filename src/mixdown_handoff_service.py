@@ -337,7 +337,7 @@ def resolve_task_sources(job: Any, artifacts: Any) -> tuple[Path, list[dict[str,
     if not isinstance(request_config, dict):
         raise ValueError('任务 request.json 必须是对象。')
     voice_mode = str(request_config.get('voice_mode') or 'single')
-    if voice_mode in ('dual', 'roformer'):
+    if voice_mode in ('dual', 'roformer', 'roformer_onnx'):
         if not ('audio/lead.wav' in by_relative and 'audio/backing.wav' in by_relative):
             raise ValueError('双声部任务缺少已核验的 lead/backing 分轨。')
         vocal_names = (('audio/lead.wav', '主唱分轨'), ('audio/backing.wav', '和声分轨'))

@@ -3729,7 +3729,15 @@
     "已加入准备队列": "Added to preparation queue",
     "已清空准备队列": "Cleared preparation queue",
     "目标运行库（GPU / CPU 独立共存）": "Target runtime (GPU & CPU coexist independently)",
-    "RoFormer 需要先在模型与组件中安装。GPU (CUDA) 与 CPU 运行库独立共存互不覆盖；已安装 CUDA 版即可直接切 CPU 推理，无需重复下载 CPU 版。": "Install BS-RoFormer in Models & Components first. GPU (CUDA) and CPU runtimes coexist independently without overwriting each other; if CUDA is installed, you can switch directly to CPU inference without downloading the CPU runtime."
+    "RoFormer 需要先在模型与组件中安装。GPU (CUDA) 与 CPU 运行库独立共存互不覆盖；已安装 CUDA 版即可直接切 CPU 推理，无需重复下载 CPU 版。": "Install BS-RoFormer in Models & Components first. GPU (CUDA) and CPU runtimes coexist independently without overwriting each other; if CUDA is installed, you can switch directly to CPU inference without downloading the CPU runtime.",
+    "BS-RoFormer ONNX（实验性）": "BS-RoFormer ONNX (Experimental)",
+    "BS-RoFormer ONNX（实验性）· 双轨": "BS-RoFormer ONNX (Experimental) · Dual Stems",
+    "自动 · WebGPU 优先": "Auto · WebGPU First",
+    "10s FP16（≤8 GB 显存）": "10s FP16 (<=8 GB VRAM)",
+    "20s FP16（12 GB+ 显存）": "20s FP16 (12 GB+ VRAM)",
+    "实验性 ONNX/WebGPU 后端，默认不启用，需在模型与组件中单独下载（AMD 显卡推荐）。8 GB 及以下显存仅用 10s FP16，可能存在驱动兼容或分离差异；NVIDIA 显卡建议优先使用原版 CUDA。": "Experimental ONNX/WebGPU backend, disabled by default. Download separately in Models & Components (recommended for AMD GPUs). Use 10s FP16 only on <=8 GB VRAM; driver compatibility or separation differences may occur. NVIDIA GPUs should prefer original PyTorch CUDA.",
+    "实验性组件提示：默认不启用，独立隔离运行库，不影响原版 PyTorch CUDA 与 DirectML。10s 分块上下文较原版减半，部分长乐句或显卡驱动下可能出现分离差异或 WebGPU 兼容问题；8 GB 及以下显存请仅用 10s FP16，12 GB+ 显存可选 20s FP16。": "Experimental component: disabled by default with an isolated runtime that never affects PyTorch CUDA or DirectML. 10s chunking halves temporal context and may cause separation differences or WebGPU driver issues; use 10s FP16 only on <=8 GB VRAM and 20s FP16 on 12 GB+ VRAM.",
+    "显存警告：当前显卡独立显存低于 11 GiB，运行 20s FP16 会触发严重共享内存换页（耗时可能飙升至数小时），请改选 10s FP16。": "VRAM warning: dedicated VRAM is below 11 GiB. Running 20s FP16 will spill heavily into shared RAM and can take hours; switch to 10s FP16."
   },
   "ja": {
     "合唱工作台": "コーラスワークスペース",
@@ -7461,6 +7469,14 @@
     "已加入准备队列": "準備キューに追加しました",
     "已清空准备队列": "準備キューをクリアしました",
     "目标运行库（GPU / CPU 独立共存）": "対象ランタイム（GPU / CPU 独立共存）",
-    "RoFormer 需要先在模型与组件中安装。GPU (CUDA) 与 CPU 运行库独立共存互不覆盖；已安装 CUDA 版即可直接切 CPU 推理，无需重复下载 CPU 版。": "BS-RoFormer は先に「モデルとコンポーネント」でインストールしてください。GPU (CUDA) と CPU ランタイムは独立して共存し上書きされません。CUDA 版が入っていれば CPU 版を再ダウンロードせずにそのまま CPU 推論へ切り替えられます。"
+    "RoFormer 需要先在模型与组件中安装。GPU (CUDA) 与 CPU 运行库独立共存互不覆盖；已安装 CUDA 版即可直接切 CPU 推理，无需重复下载 CPU 版。": "BS-RoFormer は先に「モデルとコンポーネント」でインストールしてください。GPU (CUDA) と CPU ランタイムは独立して共存し上書きされません。CUDA 版が入っていれば CPU 版を再ダウンロードせずにそのまま CPU 推論へ切り替えられます。",
+    "BS-RoFormer ONNX（实验性）": "BS-RoFormer ONNX（実験的）",
+    "BS-RoFormer ONNX（实验性）· 双轨": "BS-RoFormer ONNX（実験的）・2トラック",
+    "自动 · WebGPU 优先": "自動・WebGPU 優先",
+    "10s FP16（≤8 GB 显存）": "10s FP16（VRAM 8 GB 以下）",
+    "20s FP16（12 GB+ 显存）": "20s FP16（VRAM 12 GB 以上）",
+    "实验性 ONNX/WebGPU 后端，默认不启用，需在模型与组件中单独下载（AMD 显卡推荐）。8 GB 及以下显存仅用 10s FP16，可能存在驱动兼容或分离差异；NVIDIA 显卡建议优先使用原版 CUDA。": "実験的な ONNX/WebGPU バックエンド（既定では無効）。「モデルとコンポーネント」から個別にダウンロードしてください（AMD GPU 推奨）。VRAM 8 GB 以下では 10s FP16 のみ使用してください。NVIDIA GPU では標準の PyTorch CUDA 版を推奨します。",
+    "实验性组件提示：默认不启用，独立隔离运行库，不影响原版 PyTorch CUDA 与 DirectML。10s 分块上下文较原版减半，部分长乐句或显卡驱动下可能出现分离差异或 WebGPU 兼容问题；8 GB 及以下显存请仅用 10s FP16，12 GB+ 显存可选 20s FP16。": "実験的コンポーネント：既定では無効で、独立したランタイムを使用するため既存の PyTorch CUDA や DirectML には影響しません。10s 分割は文脈長が半分になり分離結果の差や WebGPU 互換問題が起きる場合があります。VRAM 8 GB 以下は 10s FP16、12 GB 以上は 20s FP16 を選択してください。",
+    "显存警告：当前显卡独立显存低于 11 GiB，运行 20s FP16 会触发严重共享内存换页（耗时可能飙升至数小时），请改选 10s FP16。": "VRAM 警告：専用 VRAM が 11 GiB 未満のため、20s FP16 は共有メモリへの激しいスワップが発生し数時間かかる恐れがあります。10s FP16 を選択してください。"
   }
 }

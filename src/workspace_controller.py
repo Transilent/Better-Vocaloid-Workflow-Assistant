@@ -17,6 +17,7 @@ class ComponentRequest:
     runtime: str
     source: str
     force: bool = False
+    precision: str = ''
 
 
 class WorkspaceController:
@@ -25,16 +26,18 @@ class WorkspaceController:
     available_routes = ('processing', 'tuning', 'tuning_workshop', 'chorus', 'audio_mixdown', 'video_mixdown', 'publishing',
                         'project_convert', 'components', 'results', 'updates')
 
-    def __init__(self, component_sources=None, *, initial_runtime='cpu'):
+    def __init__(self, component_sources=None, *, initial_runtime='cpu', initial_onnx_precision='fp16_10s'):
         self.draft = PreparationDraft()
         self.route = 'processing'
         self.return_route = 'processing'
         self.runtime = initial_runtime if initial_runtime in ('cpu', 'cuda') else 'cpu'
+        self.onnx_precision = initial_onnx_precision if initial_onnx_precision in ('fp16_10s', 'fp16') else 'fp16_10s'
         self.component_sources = dict(component_sources or {})
         self.query = ''
         self.selected_id = 'builtin'
         self.rows = ()
         self.rows_runtime = None
+        self.rows_onnx_precision = None
         self.active = None
         self.operation = {'state': 'idle', 'action': '', 'message': '', 'done': 0, 'total': 0}
         self.preparation_task = {'id': '', 'state': 'idle', 'job': '', 'message': '',
@@ -150,11 +153,14 @@ class WorkspaceController:
     def selected(self):
         return next((row for row in self.visible_rows if row['id'] == self.selected_id), {})
 
-    def set_catalog(self, runtime, rows):
+    def set_catalog(self, runtime, rows, *, onnx_precision=None):
         if runtime != self.runtime:
+            return False
+        if onnx_precision is not None and onnx_precision != self.onnx_precision:
             return False
         self.rows = tuple(dict(row) for row in rows)
         self.rows_runtime = runtime
+        self.rows_onnx_precision = onnx_precision or self.onnx_precision
         return True
 
     def set_query(self, query):
@@ -173,6 +179,12 @@ class WorkspaceController:
         if self.active or runtime not in ('cpu', 'cuda') or self.runtime == runtime:
             return False
         self.runtime = runtime
+        return True
+
+    def set_onnx_precision(self, precision):
+        if self.active or precision not in ('fp16_10s', 'fp16') or self.onnx_precision == precision:
+            return False
+        self.onnx_precision = precision
         return True
 
     @property
@@ -203,6 +215,8 @@ class WorkspaceController:
         voice = draft['voice_mode']
         if voice == 'import':
             separator = ''
+        elif voice == 'roformer_onnx' or (voice == 'dual' and draft['separator_model'] == 'roformer_onnx'):
+            separator = 'roformer_onnx'
         elif voice == 'roformer' or (voice == 'dual' and draft['separator_model'] == 'roformer'):
             separator = 'roformer'
         else:
@@ -230,6 +244,12 @@ class WorkspaceController:
                 ready.add('roformer')
             else:
                 ready.discard('roformer')
+        elif separator == 'roformer_onnx' and known:
+            onnx_health = by_id.get('roformer_onnx', {}).get('health', {})
+            if onnx_health.get('installed_precisions'):
+                ready.add('roformer_onnx')
+            else:
+                ready.discard('roformer_onnx')
         return {
             'components': required, 'ready': known,
             'readyIds': [key for key in by_id if key in ready],
@@ -252,7 +272,7 @@ class WorkspaceController:
 
     def use_builtin_component(self):
         plan = self.component_plan
-        if not plan['builtinReady'] or 'roformer' not in plan['missingIds']:
+        if not plan['builtinReady'] or not ({'roformer', 'roformer_onnx'} & set(plan['missingIds'])):
             return False
         return self._use_separation_row(next(row for row in self.rows if row['id'] == 'builtin'))
 
@@ -260,7 +280,7 @@ class WorkspaceController:
         if self.active or self.rows_runtime != self.runtime or not row.get('can_use'):
             return False
         model = row.get('model')
-        if model not in ('dual', 'roformer'):
+        if model not in ('dual', 'roformer', 'roformer_onnx'):
             return False
         device = self.runtime if model == 'roformer' else 'auto'
         if (self.draft.voice_mode, self.draft.separator_model, self.draft.roformer_device) != ('dual', model, device):
@@ -274,7 +294,8 @@ class WorkspaceController:
         row = self.selected
         if self.active or not capability or self.rows_runtime != self.runtime or not row.get(capability):
             return None
-        request = ComponentRequest(uuid4().hex, action, row['id'], self.runtime, self.source, bool(force))
+        prec = self.onnx_precision if row['id'] == 'roformer_onnx' else ''
+        request = ComponentRequest(uuid4().hex, action, row['id'], self.runtime, self.source, bool(force), prec)
         self.active = request
         self.operation = {'state': 'running', 'action': action, 'component': row['title'],
                           'message': '正在准备…', 'done': 0, 'total': 0}

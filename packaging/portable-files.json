@@ -438,6 +438,10 @@
       "source": "src/quick_ui/ComponentsPage.qml"
     },
     {
+      "file": "quick_ui/RoformerOnnxBar.qml",
+      "source": "src/quick_ui/RoformerOnnxBar.qml"
+    },
+    {
       "file": "quick_ui/RoformerRuntimeBar.qml",
       "source": "src/quick_ui/RoformerRuntimeBar.qml"
     },
@@ -602,6 +606,10 @@
       "source": "components/roformer.json"
     },
     {
+      "file": "components/roformer-onnx.json",
+      "source": "components/roformer-onnx.json"
+    },
+    {
       "file": "config.json",
       "source": "packaging/config.example.json"
     },
@@ -692,6 +700,14 @@
     {
       "file": "roformer.py",
       "source": "src/roformer.py"
+    },
+    {
+      "file": "roformer_onnx.py",
+      "source": "src/roformer_onnx.py"
+    },
+    {
+      "file": "roformer_onnx_component.py",
+      "source": "src/roformer_onnx_component.py"
     },
     {
       "file": "storage.py",

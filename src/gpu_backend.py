@@ -132,6 +132,63 @@ def probe_gpu_environment() -> dict[str, Any]:
     }
 
 
+def recommend_roformer_onnx() -> dict[str, Any]:
+    """Recommend experimental BS-RoFormer ONNX only for AMD GPUs without NVIDIA CUDA dGPU.
+
+    VRAM tiers (only 10s FP16 and 20s FP16 are offered):
+      - >= 11 GiB dedicated VRAM -> ``fp16`` (20s FP16)
+      - <= 10 GiB dedicated VRAM or APU -> ``fp16_10s`` (10s FP16)
+    """
+    try:
+        hardware = [_serialize_adapter(a) for a in runtime_devices.adapters() if not a.is_software]
+    except (OSError, RuntimeError, ValueError):
+        hardware = []
+    amd = [a for a in hardware if a['vendor'] == 'AMD']
+    nvidia_discrete = [a for a in hardware if a['vendor'] == 'NVIDIA' and a['dedicated_vram_bytes'] >= (2 << 30)]
+    max_dedicated_bytes = max((a['dedicated_vram_bytes'] for a in hardware), default=0)
+    max_dedicated_gib = round(max_dedicated_bytes / float(1 << 30), 1)
+    if amd and not nvidia_discrete:
+        best_amd = max(amd, key=lambda a: (a['dedicated_vram_bytes'], a['shared_vram_bytes']))
+        amd_vram_gib = round(best_amd['dedicated_vram_bytes'] / float(1 << 30), 1)
+        precision = 'fp16' if best_amd['dedicated_vram_bytes'] >= (11 << 30) else 'fp16_10s'
+        tier_label = '20s FP16' if precision == 'fp16' else '10s FP16'
+        return {
+            'recommend_onnx': True,
+            'has_amd_gpu': True,
+            'has_nvidia_discrete': False,
+            'recommended_precision': precision,
+            'gpu_name': best_amd['name'],
+            'vram_gib': amd_vram_gib,
+            'max_dedicated_vram_gib': max_dedicated_gib,
+            'reason': f"检测到 AMD 显卡（{best_amd['name']} · 独立显存 {amd_vram_gib:.1f} GiB），推荐下载实验性 {tier_label}。",
+        }
+    if nvidia_discrete:
+        best_nv = max(nvidia_discrete, key=lambda a: a['dedicated_vram_bytes'])
+        nv_vram_gib = round(best_nv['dedicated_vram_bytes'] / float(1 << 30), 1)
+        precision = 'fp16' if best_nv['dedicated_vram_bytes'] >= (11 << 30) else 'fp16_10s'
+        return {
+            'recommend_onnx': False,
+            'has_amd_gpu': bool(amd),
+            'has_nvidia_discrete': True,
+            'recommended_precision': precision,
+            'gpu_name': best_nv['name'],
+            'vram_gib': nv_vram_gib,
+            'max_dedicated_vram_gib': max_dedicated_gib,
+            'reason': f"当前检测到 NVIDIA 独显（{best_nv['name']}），推荐优先使用原版「BS-RoFormer（CUDA）」。",
+        }
+    precision = 'fp16' if max_dedicated_bytes >= (11 << 30) else 'fp16_10s'
+    return {
+        'recommend_onnx': False,
+        'has_amd_gpu': False,
+        'has_nvidia_discrete': False,
+        'recommended_precision': precision,
+        'gpu_name': hardware[0]['name'] if hardware else '',
+        'vram_gib': max_dedicated_gib,
+        'max_dedicated_vram_gib': max_dedicated_gib,
+        'reason': '未检测到 AMD 显卡；默认不启用，仅供实验性测试。',
+    }
+
+
 def adapter_choices() -> list[dict[str, Any]]:
     """Return UI-friendly GPU adapter choices with real hardware names when available."""
     rows: list[dict[str, Any]] = [{'label': '自动选择', 'value': 'auto'}]

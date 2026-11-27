@@ -140,13 +140,15 @@ LEGACY_FRONTEND_FILES = frozenset({
     'update_notice_ui.py', 'updates_ui.py', 'upgrade_bootstrap.py', 'video_mixdown_ui.py',
     'workflow_widgets.py', 'workspace_ui.py',
 })
-RUNTIME_PROGRAM_FILES = {'components/roformer.json', 'components/runtime-features.json', 'models/来源说明.md',
+RUNTIME_PROGRAM_FILES = {'components/roformer.json', 'components/roformer-onnx.json', 'components/runtime-features.json', 'models/来源说明.md',
                           'components/pedalboard.json', 'components/pedalboard-LICENSE.txt',
                           'components/pedalboard-NOTICE.txt', 'components/pedalboard-THIRD_PARTY_NOTICES.md'}
 ROOT_FILES.add('VWA.exe')
 ROOT_FILES.update({'Start-Quick.bat', 'quick_ui/UiNumberField.qml', 'vocaloid_pitch.py'})
 ROOT_FILES.update({
-    'components/runtime-features.json', 'components/roformer.json',
+    'components/runtime-features.json', 'components/roformer.json', 'components/roformer-onnx.json',
+    'gpu_backend.py', 'roformer_onnx.py', 'roformer_onnx_component.py',
+    'quick_ui/RoformerRuntimeBar.qml', 'quick_ui/RoformerOnnxBar.qml',
     'mixdown_deesser.py', 'mixdown_loudness.py', 'mixdown_waveform.py', 'quick_ui/MixdownAlignment.qml',
     'tuning_clock.py', 'tuning_native.py', 'tuning_native_pitch.py', 'tuning_note_detail.py',
     'tuning_pitch_layer.py', 'tuning_score_edits.py',

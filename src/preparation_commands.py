@@ -18,10 +18,10 @@ from preparation_languages import (
 
 _STEMS = ('lead', 'backing', 'instrumental')
 _CHOICES = {
-    'input_mode': ('local', 'bilibili'), 'voice_mode': ('single', 'dual', 'import', 'roformer'),
-    'separator_model': ('dual', 'roformer'), 'target': ('separation', 'midi', 'subtitles'),
+    'input_mode': ('local', 'bilibili'), 'voice_mode': ('single', 'dual', 'import', 'roformer', 'roformer_onnx'),
+    'separator_model': ('dual', 'roformer', 'roformer_onnx'), 'target': ('separation', 'midi', 'subtitles'),
     'language': LANGUAGES, 'zh_lyric_mode': ('hanzi', 'pinyin'),
-    'roformer_device': ('auto', 'cpu', 'cuda'), 'separation_flow': ('cascade', 'independent'),
+    'roformer_device': ('auto', 'cpu', 'cuda', 'webgpu'), 'separation_flow': ('cascade', 'independent'),
     'separation_device': ('cpu', 'dml'), 'midi_device': ('cpu', 'dml'),
     'midi_backend': ('v1', 'v2'), 'alignment_engine': ('hfa', 'tifa'), 'midi_steps': (8, 16, 32),
     'reference_mode': ('local', 'netease'),
@@ -220,8 +220,8 @@ class PreparationDraft:
             if not options[key + '_export_enabled']:
                 values[key + '_formats'] = []
         values['reference_mode'] = self.fields.get('reference_mode', 'local')
-        return replace(self, fields=values, voice_mode='dual' if mode == 'roformer' else mode,
-                       separator_model='roformer' if mode == 'roformer' else 'dual',
+        return replace(self, fields=values, voice_mode='dual' if mode in ('roformer', 'roformer_onnx') else mode,
+                       separator_model=mode if mode in ('roformer', 'roformer_onnx') else 'dual',
                        roformer_device=options['roformer_device'], revision=self.revision + 1)
 
     def edit(self, name, value):
@@ -292,7 +292,11 @@ class PreparationDraft:
     def preferences(self):
         values = self.view
         values['voice_mode'] = self.separator_model if self.voice_mode == 'dual' else self.voice_mode
-        values['separation_flow'] = values['separation_flow'] if values['voice_mode'] == 'roformer' else 'cascade'
+        values['separation_flow'] = values['separation_flow'] if values['voice_mode'] in ('roformer', 'roformer_onnx') else 'cascade'
+        if values['voice_mode'] == 'roformer_onnx' and values['roformer_device'] == 'cuda':
+            values['roformer_device'] = 'auto'
+        elif values['voice_mode'] == 'roformer' and values['roformer_device'] == 'webgpu':
+            values['roformer_device'] = 'auto'
         values['bpm'] = float(values['bpm']) if values['bpm'].strip() else None
         for key in ('project', 'audio'):
             values[key + '_export_enabled'] = bool(values[key + '_formats'])
@@ -388,6 +392,10 @@ def selected_component_issues(draft):
         import optional_components
         if not optional_components.status()['ready']:
             issues.append('BS-RoFormer 尚未就绪。请安装组件，或改用内置分离。')
+    elif draft.voice_mode == 'roformer_onnx' or (draft.voice_mode == 'dual' and draft.separator_model == 'roformer_onnx'):
+        import roformer_onnx_component
+        if not roformer_onnx_component.status()['ready']:
+            issues.append('BS-RoFormer ONNX（实验性）尚未就绪。请在模型与组件中单独下载，或改用内置分离。')
     if data['target'] == 'separation' or not data['recognize_lyrics']:
         return issues
     if PROFILES[data['language']].asr_feature == QWEN_FEATURE:

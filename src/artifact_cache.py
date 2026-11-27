@@ -39,8 +39,17 @@ def stage_signature(job, request, key):
                 from optional_components import manifest
                 data['roformer_model'] = [(e['name'], e['sha256']) for e in manifest()['weights']]
                 data['roformer_adapter'] = file_hash(CODE_ROOT / 'roformer.py')
+            elif mode == 'roformer_onnx':
+                data['roformer_onnx'] = request.get('roformer_device', 'auto')
+                import roformer_onnx_component
+                st = roformer_onnx_component.status()
+                prec = st.get('precision') or 'fp16_10s'
+                spec = roformer_onnx_component.manifest()
+                w = spec['weights'].get(prec, {})
+                data['roformer_onnx_model'] = (prec, w.get('name', ''), w.get('sha256', ''), spec['config']['sha256'])
+                data['roformer_onnx_adapter'] = file_hash(CODE_ROOT / 'roformer_onnx.py')
         data['adapter'] = file_hash(CODE_ROOT / 'mdx.py') if mode != 'import' else 1
-        if mode in ('dual','roformer'):
+        if mode in ('dual', 'roformer', 'roformer_onnx'):
             data['partition_adapter'] = file_hash(CODE_ROOT/'vocal_partition.py')
     elif key == 'subtitles':
         data['reference_lines'] = [request.get('lyric_lines', []), request.get('backing_lyric_lines', [])]

@@ -23,7 +23,7 @@ ScrollView {
     readonly property bool planLoaded: taskPlan.ready === true
     readonly property bool planComplete: planLoaded && missingIds.length === 0
     readonly property bool builtinFallbackAvailable: planLoaded && taskPlan.builtinReady === true
-        && missingIds.indexOf("roformer") >= 0
+        && (missingIds.indexOf("roformer") >= 0 || missingIds.indexOf("roformer_onnx") >= 0)
     readonly property real reserveBytes: typeof health.reserve_bytes === "number" && health.reserve_bytes >= 0
         ? health.reserve_bytes : 0
     readonly property real freeBytes: typeof volume.free_bytes === "number" ? volume.free_bytes : -1
@@ -62,6 +62,7 @@ ScrollView {
     function componentTitle(componentId) {
         return componentId === "builtin" ? controller.text("内置 Karaoke 2")
             : componentId === "roformer" ? "BS-RoFormer"
+            : componentId === "roformer_onnx" ? controller.text("BS-RoFormer ONNX（实验性）")
             : componentId === "chinese" ? controller.text("中文 / 英文歌词识别")
             : componentId === "expression" ? controller.text("参考演唱音色")
             : componentId
@@ -471,6 +472,14 @@ ScrollView {
 
                     RoformerRuntimeBar {
                         visible: page.component.id === "roformer"
+                        theme: page.theme
+                        controller: page.controller
+                        health: page.health
+                        idle: page.idle
+                    }
+
+                    RoformerOnnxBar {
+                        visible: page.component.id === "roformer_onnx"
                         theme: page.theme
                         controller: page.controller
                         health: page.health
