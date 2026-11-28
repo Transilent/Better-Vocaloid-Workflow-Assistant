@@ -18,7 +18,7 @@
 - 解除 Synthesizer V Studio 2 工程版本硬上限，支持 `version: 203+` 独立音符组读写，同时保留共享组与裁切组的只读保护。
 - 为 Vocal2Midi v1/v2 的 RMVPE 推理新增 DirectML 显卡重置（`0x887A0005` 等）与中文系统 GBK 解码异常自动回退 CPU，并接入 `soxr` 快速重采样与 Qwen 显存复用。
 - 准备页显卡选择器显示真实 GPU 名称与显存容量；修复 13 个 QML 文件窗口退出时的 `quickTranslation` 空指针隐患。
-- **全版本二跳全量更新与自动数据迁移器**：支持旧版用户通过一跳桥接进入全量包下载迁移器，校验下载 3.0.0 Full/JPN 分卷包后自动迁移 `jobs/`、`config.json`、`user-presets/`、`cache/accounts/` 与已下载的可选模型并启动新版本；同步完善 Inno Setup 6 安装器（支持 >2 GiB 分片与升级/卸载保留用户数据）。
+- **全版本二跳全量更新与自动数据迁移器**：支持旧版用户通过一跳桥接进入零依赖本地 Web UI 全量下载迁移器，校验下载 3.0.0 Full/JPN 分卷包后自动迁移 `jobs/`、`config.json`、`user-presets/`、`cache/accounts/` 与已下载的可选模型并启动新版本；同步新增 **零依赖单文件在线引导安装器（`VWA-Online-Installer.exe`，支持中/英/日三语、深浅主题、Full/JPN 版本卡片自选、国内镜像竞速与多线程分片续传，覆盖升级无损保留用户数据）**，并保留绿色便携版与 Inno Setup 6 离线安装器。
 - **安全与运行库升级**：便携版 `runtime/python` 升级 `certifi 2026.10.18`、`urllib3 2.8.0`、`msgpack 1.2.3`、`pip 26.2`、`setuptools 84.1.0`，MCP 锁文件升级 `opentelemetry-api 1.45.2`，清零全部 10 条 Dependabot 安全告警；新增 CodeQL SAST、AST 安全反序列化守卫与 CI 卫生检查。
 
 ## 2.1.0 — 2026-11-20
