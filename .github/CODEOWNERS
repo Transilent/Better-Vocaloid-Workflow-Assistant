@@ -1,0 +1,12 @@
+# Default owner for the entire repository
+* @Transilent
+
+# Critical governance, CI, packaging, component manifests, and runtime code
+/.github/ @Transilent
+/packaging/ @Transilent
+/components/ @Transilent
+/src/ @Transilent
+/tools/ @Transilent
+/dependencies/ @Transilent
+/tests/ @Transilent
+/SECURITY.md @Transilent

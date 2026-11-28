@@ -379,6 +379,62 @@ def test_no_unguarded_open_url_from_local_file():
     )
 
 
+def test_no_unsafe_yaml_load():
+    """Forbid yaml.unsafe_load() and unsafe yaml.load() loaders across src/, tools/, and tests/."""
+    unsafe_loaders = frozenset({'UnsafeLoader', 'FullLoader', 'Loader', 'CLoader'})
+    offenders = []
+    for sub in ('src', 'tools', 'tests'):
+        folder = ROOT / sub
+        if not folder.is_dir():
+            continue
+        for path in sorted(folder.rglob('*.py')):
+            if '__pycache__' in path.parts:
+                continue
+            tree = ast.parse(path.read_text(encoding='utf-8'))
+            rel = path.relative_to(ROOT).as_posix()
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if not isinstance(func, ast.Attribute):
+                    continue
+                if func.attr == 'unsafe_load':
+                    offenders.append(f'{rel}:{node.lineno} (yaml.unsafe_load)')
+                elif func.attr == 'load' and isinstance(func.value, ast.Name) and func.value.id == 'yaml':
+                    loader_kw = next((kw for kw in node.keywords if kw.arg == 'Loader'), None)
+                    if loader_kw is None:
+                        offenders.append(f'{rel}:{node.lineno} (yaml.load without Loader=)')
+                    elif isinstance(loader_kw.value, ast.Attribute) and loader_kw.value.attr in unsafe_loaders:
+                        offenders.append(f'{rel}:{node.lineno} (yaml.load with unsafe {loader_kw.value.attr})')
+    assert not offenders, (
+        'Unsafe YAML deserialization is forbidden (use yaml.safe_load or a SafeLoader subclass): '
+        f'{offenders}'
+    )
+
+
+def test_ci_workflow_guardrails_intact():
+    """Ensure .github/workflows/ci.yml retains least-privilege permissions and core L0/security checks."""
+    ci_path = ROOT / '.github/workflows/ci.yml'
+    assert ci_path.is_file(), 'Missing .github/workflows/ci.yml'
+    text = ci_path.read_text(encoding='utf-8')
+    required_snippets = (
+        'contents: read',
+        'tools/verify_source_layout.py',
+        'tools/ci_hygiene_check.py',
+        'ruff check src tools tests',
+        'tools/extract_i18n.py --check --max-missing-en 0 --max-missing-ja 0',
+        'tests/test_source_layout.py',
+        'tests/test_architecture_guards.py',
+        'tests/test_wave0_shell_journeys.py',
+        'tests/test_wave8_marathon_journeys.py',
+        'tests/test_amd_gpu_foundation.py',
+        'tests/test_hotfix_v211_regressions.py',
+        'tests/test_roformer_onnx_experimental.py',
+    )
+    missing = [item for item in required_snippets if item not in text]
+    assert not missing, f'Required CI guardrails removed from .github/workflows/ci.yml: {missing}'
+
+
 def main():
     test_no_qt_in_domain_modules()
     test_no_silent_except_exception()
@@ -391,6 +447,8 @@ def main():
     test_file_size_ratchet()
     test_no_bare_temporary_directory()
     test_no_unguarded_open_url_from_local_file()
+    test_no_unsafe_yaml_load()
+    test_ci_workflow_guardrails_intact()
     print('PASS test_architecture_guards')
 
 

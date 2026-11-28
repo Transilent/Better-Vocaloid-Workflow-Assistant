@@ -11,6 +11,9 @@ on:
       - "dev/**"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: vwa-ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -19,6 +22,7 @@ jobs:
   source-and-l0:
     name: Source Layout, Lint, i18n & L0 Guards
     runs-on: windows-latest
+    timeout-minutes: 15
     env:
       PYTHONUTF8: "1"
       PYTHONDONTWRITEBYTECODE: "1"
@@ -28,6 +32,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -47,6 +53,10 @@ jobs:
       - name: Verify source layout and manifest parity
         shell: pwsh
         run: python tools/verify_source_layout.py
+
+      - name: Repository hygiene, schema & secret guard
+        shell: pwsh
+        run: python tools/ci_hygiene_check.py
 
       - name: Ruff critical lint (E9/F63/F7/F82)
         shell: pwsh
@@ -80,7 +90,9 @@ jobs:
             'tests/test_wave3_chorus_journeys.py',
             'tests/test_wave4_mixdown_journeys.py',
             'tests/test_wave8_marathon_journeys.py',
-            'tests/test_amd_gpu_foundation.py'
+            'tests/test_amd_gpu_foundation.py',
+            'tests/test_hotfix_v211_regressions.py',
+            'tests/test_roformer_onnx_experimental.py'
           )
           foreach ($t in $tests) {
             Write-Host "=== Running $t ==="
@@ -93,10 +105,13 @@ jobs:
   native-cmake-smoke:
     name: Native C/C++ CMake Build & CTest
     runs-on: windows-latest
+    timeout-minutes: 15
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || github.event_name == 'push'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Configure native DLLs and unit test
         shell: pwsh
