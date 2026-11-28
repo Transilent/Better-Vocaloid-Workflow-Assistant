@@ -5,7 +5,7 @@ between Python step counts and QML UI definitions.
 """
 from __future__ import annotations
 
-FEATURE_HIGHLIGHTS_VERSION = "2.2.0"
+FEATURE_HIGHLIGHTS_VERSION = "3.0.0"
 
 SCENARIO_CARDS: tuple[dict[str, str], ...] = (
     {

@@ -6,8 +6,8 @@ Security fixes are provided for the latest `main` branch and the current minor r
 
 | Version | Supported |
 | --- | --- |
-| `main` / latest `2.1.x` | Yes |
-| `< 2.1.0` | No — please upgrade to the latest release |
+| `main` / latest `3.0.x` | Yes |
+| `< 3.0.0` | No — please upgrade to the latest release |
 
 ## Reporting a Vulnerability
 

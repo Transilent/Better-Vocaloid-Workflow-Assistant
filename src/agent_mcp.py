@@ -49,7 +49,7 @@ def _server_version(app_root):
                     return ver.strip()
         except (OSError, ValueError):
             pass
-    return '2.1.0'
+    return '3.0.0'
 
 
 def build_server(config_path):

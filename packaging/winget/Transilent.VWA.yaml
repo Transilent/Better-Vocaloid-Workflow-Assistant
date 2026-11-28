@@ -2,7 +2,7 @@
 # Template for submitting VWA releases to microsoft/winget-pkgs.
 # Update PackageVersion, InstallerUrl, and InstallerSha256 from SHA256SUMS.txt on each release.
 PackageIdentifier: Transilent.VWA
-PackageVersion: 2.1.0
+PackageVersion: 3.0.0
 PackageLocale: zh-CN
 Publisher: Transilent
 PublisherUrl: https://github.com/Transilent
@@ -23,7 +23,7 @@ Installers:
   - Architecture: x64
     InstallerType: inno
     Scope: user
-    InstallerUrl: https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/download/v2.1.0/VWA-Setup-2.1.0-x64.exe
+    InstallerUrl: https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/download/v3.0.0/VWA-Setup-3.0.0-x64.exe
     InstallerSha256: REPLACE_WITH_SHA256_FROM_SHA256SUMS_TXT
 ManifestType: singleton
 ManifestVersion: 1.6.0

@@ -106,6 +106,9 @@ def reset_state(sandbox):
         if target.resolve().parent != sandbox or target.is_symlink() or target.is_junction():
             raise RuntimeError('Test state contains an escaping directory')
         shutil.rmtree(_native(target))
+    src_cache = sandbox / 'src/cache'
+    if src_cache.exists() and not src_cache.is_symlink() and not src_cache.is_junction():
+        shutil.rmtree(_native(src_cache))
     for name in ('last_job.txt', 'publish-ui.json', 'launcher.log', 'diagnostics.log', '依赖检查报告.json'):
         (sandbox / name).unlink(missing_ok=True)
     shutil.copy2(sandbox / 'packaging/config.example.json', sandbox / 'config.json')
