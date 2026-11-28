@@ -1278,5 +1278,19 @@
   "等待队列": "Waiting queue",
   "开始队列": "Start queue",
   "已取消当前任务，批量队列已暂停": "Current task cancelled; batch queue paused",
-  "已跳过缺失的队列文件": "Skipped missing queued file"
+  "已跳过缺失的队列文件": "Skipped missing queued file",
+  "使用中": "Active",
+  "当前已选用": "Selected in plan",
+  "已装档位": "Installed tiers",
+  "ONNX 权重支持直连或加速源下载；隔离 onnxruntime-webgpu 1.27.0 仍单独保存。": "ONNX weights support direct or mirror downloads; isolated onnxruntime-webgpu 1.27.0 is stored separately.",
+  "已就绪（CUDA+CPU）": "Ready (CUDA+CPU)",
+  "已就绪（CUDA）": "Ready (CUDA)",
+  "已就绪（CPU）": "Ready (CPU)",
+  "已装 CUDA · CPU 未装": "CUDA ready · CPU missing",
+  "已装 CPU · CUDA 未装": "CPU ready · CUDA missing",
+  "已就绪（10s+20s）": "Ready (10s+20s)",
+  "已就绪（10s）": "Ready (10s)",
+  "已就绪（20s）": "Ready (20s)",
+  "已装 10s · 20s 未装": "10s ready · 20s missing",
+  "已装 20s · 10s 未装": "20s ready · 10s missing"
 }

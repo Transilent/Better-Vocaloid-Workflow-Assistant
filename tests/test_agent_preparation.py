@@ -558,7 +558,9 @@ class PreparationCreationTests(unittest.TestCase):
     def test_real_create_is_deterministic_replayable_and_does_not_remember_job(self):
         plan = self.plan()
         remembered = []
-        with (patch.object(common, "ROOT", APP), patch.object(pipeline, "ROOT", APP),
+        import vwa_paths
+        with (patch.object(common, "ROOT", APP), patch.object(vwa_paths, "ROOT", APP),
+              patch.object(pipeline, "ROOT", APP),
               patch.object(pipeline, "remember_job", side_effect=lambda job: remembered.append(str(job)))):
             first = agent_preparation.create_preparation(plan, self.root)
             second = agent_preparation.create_preparation(plan, self.root)

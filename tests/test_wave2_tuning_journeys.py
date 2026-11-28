@@ -575,7 +575,24 @@ class Wave2Qt6InteractiveJourneysTests(unittest.TestCase):
             vsqx_path = _make_vsqx(self.work / 'edit.vsqx', title=f'Vsqx-{salt}')
             ufdata_path = _make_ufdata(self.work / 'edit.ufdata', name=f'Uf-{salt}')
             sv2_path = self.work / 'readonly_sv2.svp'
-            atomic_json(sv2_path, _make_svp([(0, 1, 60, 'あ'), (1, 1, 62, 'い')], version=201, name=f'Sv2-{salt}'))
+            sv2_doc = _make_svp([(0, 1, 60, 'あ'), (1, 1, 62, 'い')], version=203, name=f'Sv2-{salt}')
+            # Shared group across two tracks triggers genuine SV2 structural read-only protection
+            shared_uuid = '00000000-0000-0000-0000-000000000001'
+            sv2_doc['library'] = [{
+                'name': 'SharedChorus', 'uuid': shared_uuid,
+                'parameters': sv2_doc['tracks'][0]['mainGroup']['parameters'],
+                'notes': list(sv2_doc['tracks'][0]['mainGroup']['notes']),
+            }]
+            sv2_doc['tracks'][0]['mainGroup']['notes'] = []
+            sv2_doc['tracks'][0]['groups'] = [{'groupID': shared_uuid, 'blickOffset': 0, 'pitchOffset': 0, 'isInstrumental': False, 'systemPitchDelta': {'mode': 'cubic', 'points': []}}]
+            sv2_doc['tracks'].append({
+                'name': 'HarmonyShared', 'dispColor': 'ff33aa66', 'dispOrder': 1, 'renderEnabled': False,
+                'mixer': sv2_doc['tracks'][0]['mixer'],
+                'mainGroup': {'name': 'main', 'uuid': 'main-2', 'parameters': sv2_doc['tracks'][0]['mainGroup']['parameters'], 'notes': []},
+                'mainRef': sv2_doc['tracks'][0]['mainRef'],
+                'groups': [{'groupID': shared_uuid, 'blickOffset': 0, 'pitchOffset': 0, 'isInstrumental': False, 'systemPitchDelta': {'mode': 'cubic', 'points': []}}],
+            })
+            atomic_json(sv2_path, sv2_doc)
 
             has_export = _ensure_export_runtime()
             format_targets = [

@@ -3737,7 +3737,21 @@
     "20s FP16（12 GB+ 显存）": "20s FP16 (12 GB+ VRAM)",
     "实验性 ONNX/WebGPU 后端，默认不启用，需在模型与组件中单独下载（AMD 显卡推荐）。8 GB 及以下显存仅用 10s FP16，可能存在驱动兼容或分离差异；NVIDIA 显卡建议优先使用原版 CUDA。": "Experimental ONNX/WebGPU backend, disabled by default. Download separately in Models & Components (recommended for AMD GPUs). Use 10s FP16 only on <=8 GB VRAM; driver compatibility or separation differences may occur. NVIDIA GPUs should prefer original PyTorch CUDA.",
     "实验性组件提示：默认不启用，独立隔离运行库，不影响原版 PyTorch CUDA 与 DirectML。10s 分块上下文较原版减半，部分长乐句或显卡驱动下可能出现分离差异或 WebGPU 兼容问题；8 GB 及以下显存请仅用 10s FP16，12 GB+ 显存可选 20s FP16。": "Experimental component: disabled by default with an isolated runtime that never affects PyTorch CUDA or DirectML. 10s chunking halves temporal context and may cause separation differences or WebGPU driver issues; use 10s FP16 only on <=8 GB VRAM and 20s FP16 on 12 GB+ VRAM.",
-    "显存警告：当前显卡独立显存低于 11 GiB，运行 20s FP16 会触发严重共享内存换页（耗时可能飙升至数小时），请改选 10s FP16。": "VRAM warning: dedicated VRAM is below 11 GiB. Running 20s FP16 will spill heavily into shared RAM and can take hours; switch to 10s FP16."
+    "显存警告：当前显卡独立显存低于 11 GiB，运行 20s FP16 会触发严重共享内存换页（耗时可能飙升至数小时），请改选 10s FP16。": "VRAM warning: dedicated VRAM is below 11 GiB. Running 20s FP16 will spill heavily into shared RAM and can take hours; switch to 10s FP16.",
+    "使用中": "Active",
+    "当前已选用": "Selected in plan",
+    "已装档位": "Installed tiers",
+    "ONNX 权重支持直连或加速源下载；隔离 onnxruntime-webgpu 1.27.0 仍单独保存。": "ONNX weights support direct or mirror downloads; isolated onnxruntime-webgpu 1.27.0 is stored separately.",
+    "已就绪（CUDA+CPU）": "Ready (CUDA+CPU)",
+    "已就绪（CUDA）": "Ready (CUDA)",
+    "已就绪（CPU）": "Ready (CPU)",
+    "已装 CUDA · CPU 未装": "CUDA ready · CPU missing",
+    "已装 CPU · CUDA 未装": "CPU ready · CUDA missing",
+    "已就绪（10s+20s）": "Ready (10s+20s)",
+    "已就绪（10s）": "Ready (10s)",
+    "已就绪（20s）": "Ready (20s)",
+    "已装 10s · 20s 未装": "10s ready · 20s missing",
+    "已装 20s · 10s 未装": "20s ready · 10s missing"
   },
   "ja": {
     "合唱工作台": "コーラスワークスペース",
@@ -7477,6 +7491,20 @@
     "20s FP16（12 GB+ 显存）": "20s FP16（VRAM 12 GB 以上）",
     "实验性 ONNX/WebGPU 后端，默认不启用，需在模型与组件中单独下载（AMD 显卡推荐）。8 GB 及以下显存仅用 10s FP16，可能存在驱动兼容或分离差异；NVIDIA 显卡建议优先使用原版 CUDA。": "実験的な ONNX/WebGPU バックエンド（既定では無効）。「モデルとコンポーネント」から個別にダウンロードしてください（AMD GPU 推奨）。VRAM 8 GB 以下では 10s FP16 のみ使用してください。NVIDIA GPU では標準の PyTorch CUDA 版を推奨します。",
     "实验性组件提示：默认不启用，独立隔离运行库，不影响原版 PyTorch CUDA 与 DirectML。10s 分块上下文较原版减半，部分长乐句或显卡驱动下可能出现分离差异或 WebGPU 兼容问题；8 GB 及以下显存请仅用 10s FP16，12 GB+ 显存可选 20s FP16。": "実験的コンポーネント：既定では無効で、独立したランタイムを使用するため既存の PyTorch CUDA や DirectML には影響しません。10s 分割は文脈長が半分になり分離結果の差や WebGPU 互換問題が起きる場合があります。VRAM 8 GB 以下は 10s FP16、12 GB 以上は 20s FP16 を選択してください。",
-    "显存警告：当前显卡独立显存低于 11 GiB，运行 20s FP16 会触发严重共享内存换页（耗时可能飙升至数小时），请改选 10s FP16。": "VRAM 警告：専用 VRAM が 11 GiB 未満のため、20s FP16 は共有メモリへの激しいスワップが発生し数時間かかる恐れがあります。10s FP16 を選択してください。"
+    "显存警告：当前显卡独立显存低于 11 GiB，运行 20s FP16 会触发严重共享内存换页（耗时可能飙升至数小时），请改选 10s FP16。": "VRAM 警告：専用 VRAM が 11 GiB 未満のため、20s FP16 は共有メモリへの激しいスワップが発生し数時間かかる恐れがあります。10s FP16 を選択してください。",
+    "使用中": "使用中",
+    "当前已选用": "現在のプランで選択中",
+    "已装档位": "導入済みプリセット",
+    "ONNX 权重支持直连或加速源下载；隔离 onnxruntime-webgpu 1.27.0 仍单独保存。": "ONNX 重みは直接またはミラーから取得でき、隔離された onnxruntime-webgpu 1.27.0 は個別に保存されます。",
+    "已就绪（CUDA+CPU）": "準備完了（CUDA+CPU）",
+    "已就绪（CUDA）": "準備完了（CUDA）",
+    "已就绪（CPU）": "準備完了（CPU）",
+    "已装 CUDA · CPU 未装": "CUDA 済・CPU 未導入",
+    "已装 CPU · CUDA 未装": "CPU 済・CUDA 未導入",
+    "已就绪（10s+20s）": "準備完了（10s+20s）",
+    "已就绪（10s）": "準備完了（10s）",
+    "已就绪（20s）": "準備完了（20s）",
+    "已装 10s · 20s 未装": "10s 済・20s 未導入",
+    "已装 20s · 10s 未装": "20s 済・10s 未導入"
   }
 }

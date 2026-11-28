@@ -6,7 +6,7 @@ import QtQuick.Layouts
 Rectangle {
     id: page
     function vwaTr(message) {
-        return typeof quickTranslation !== "undefined" ? quickTranslation.text(message) : message
+        return typeof quickTranslation !== "undefined" && quickTranslation ? quickTranslation.text(message) : message
     }
     objectName: "settingsPage"
     required property QtObject theme

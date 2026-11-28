@@ -5,7 +5,7 @@ import QtQuick.Layouts
 Item {
     id: root
     function vwaTr(message) {
-        return typeof quickTranslation !== "undefined" ? quickTranslation.text(message) : message
+        return typeof quickTranslation !== "undefined" && quickTranslation ? quickTranslation.text(message) : message
     }
     objectName: "mixdownEq"
     required property QtObject theme

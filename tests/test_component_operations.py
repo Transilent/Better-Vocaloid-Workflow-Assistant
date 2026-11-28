@@ -85,7 +85,7 @@ assert builtin_missing['status'] == 'missing' and not builtin_missing['can_use']
 cpu_ready = dict(READY, runtime='cpu')
 roformer_cpu = catalog('cuda', roformer=cpu_ready)[1]
 assert roformer_cpu['status'] == 'missing'
-assert roformer_cpu['status_text'] == '当前目标未安装'
+assert roformer_cpu['status_text'] == '已装 CPU · CUDA 未装'
 assert roformer_cpu['health']['ready_runtime'] == 'cpu'
 assert roformer_cpu['installed_bytes'] == 0
 assert roformer_cpu['can_install'] and not roformer_cpu['can_verify']

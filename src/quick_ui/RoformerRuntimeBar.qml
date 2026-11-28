@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 
-RowLayout {
+Flow {
     id: root
     objectName: "roformerRuntimeStatusRow"
     required property QtObject theme
@@ -11,6 +11,8 @@ RowLayout {
     Layout.fillWidth: true
     spacing: Math.round(8 * theme.scale)
 
+    function tr(msg) { return root.controller ? root.controller.text(msg) : msg }
+
     Repeater {
         model: [
             { key: "cuda", label: "GPU (CUDA)" },
@@ -18,25 +20,27 @@ RowLayout {
         ]
         delegate: Rectangle {
             required property var modelData
-            readonly property var runtimesMap: root.health.runtimes || ({})
+            readonly property var runtimesMap: root.health && root.health.runtimes ? root.health.runtimes : ({})
             readonly property bool installed: runtimesMap[modelData.key] === "ready"
-                || (!runtimesMap[modelData.key] && root.health.ready_runtime === modelData.key)
-            readonly property bool selected: root.controller.runtime === modelData.key
+                || (!runtimesMap[modelData.key] && root.health && root.health.ready_runtime === modelData.key)
+            readonly property bool selected: !!root.controller && root.controller.runtime === modelData.key
             objectName: "roformerStatus_" + modelData.key
-            Layout.preferredHeight: Math.round(26 * root.theme.scale)
-            Layout.preferredWidth: runtimePillText.implicitWidth + Math.round(18 * root.theme.scale)
+            height: Math.round(28 * root.theme.scale)
+            width: Math.min(root.width > 0 ? root.width : 9999, runtimePillText.implicitWidth + Math.round(20 * root.theme.scale))
             radius: height / 2
             color: installed
-                ? Qt.tint(root.theme.success, Qt.rgba(0, 0, 0, 0.86))
-                : root.theme.raised
+                ? Qt.rgba(root.theme.success.r, root.theme.success.g, root.theme.success.b, root.theme.dark ? 0.16 : 0.12)
+                : (selected
+                    ? Qt.rgba(root.theme.accent.r, root.theme.accent.g, root.theme.accent.b, root.theme.dark ? 0.14 : 0.10)
+                    : root.theme.raised)
             border.color: selected ? root.theme.accent : (installed ? root.theme.success : root.theme.line)
             border.width: selected ? 1.5 : 1
 
             Text {
                 id: runtimePillText
                 anchors.centerIn: parent
-                text: modelData.label + " · " + root.controller.text(installed ? "已安装" : "未安装")
-                color: installed ? root.theme.success : root.theme.muted
+                text: (selected ? "● " : "") + modelData.label + " · " + root.tr(installed ? "已安装" : "未安装")
+                color: installed ? root.theme.success : (selected ? root.theme.accent : root.theme.muted)
                 font.pixelSize: Math.round(11 * root.theme.scale)
                 font.weight: selected ? Font.DemiBold : Font.Normal
                 textFormat: Text.PlainText
@@ -46,10 +50,8 @@ RowLayout {
                 anchors.fill: parent
                 enabled: root.idle
                 cursorShape: root.idle ? Qt.PointingHandCursor : Qt.ArrowCursor
-                onClicked: root.controller.setRuntime(modelData.key)
+                onClicked: if (root.controller) root.controller.setRuntime(modelData.key)
             }
         }
     }
-
-    Item { Layout.fillWidth: true }
 }

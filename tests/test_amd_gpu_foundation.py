@@ -153,6 +153,10 @@ class AmdGpuFoundationTests(unittest.TestCase):
         v2_root = str(APP / 'dependencies/vocal2midi2')
         if v2_root not in sys.path:
             sys.path.insert(0, v2_root)
+        # Ensure we import the sandbox's own rmvpe_api rather than any host-cached inference module
+        for mod_name in list(sys.modules):
+            if mod_name == 'inference' or mod_name.startswith('inference.'):
+                sys.modules.pop(mod_name, None)
         try:
             from inference.API.rmvpe_api import RmvpeTranscriber
         except ImportError:

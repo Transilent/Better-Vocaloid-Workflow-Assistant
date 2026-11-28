@@ -148,7 +148,7 @@ ROOT_FILES.update({'Start-Quick.bat', 'quick_ui/UiNumberField.qml', 'vocaloid_pi
 ROOT_FILES.update({
     'components/runtime-features.json', 'components/roformer.json', 'components/roformer-onnx.json',
     'gpu_backend.py', 'roformer_onnx.py', 'roformer_onnx_component.py',
-    'quick_ui/RoformerRuntimeBar.qml', 'quick_ui/RoformerOnnxBar.qml',
+    'quick_ui/ComponentPlanCard.qml', 'quick_ui/RoformerRuntimeBar.qml', 'quick_ui/RoformerOnnxBar.qml',
     'mixdown_deesser.py', 'mixdown_loudness.py', 'mixdown_waveform.py', 'quick_ui/MixdownAlignment.qml',
     'tuning_clock.py', 'tuning_native.py', 'tuning_native_pitch.py', 'tuning_note_detail.py',
     'tuning_pitch_layer.py', 'tuning_score_edits.py',

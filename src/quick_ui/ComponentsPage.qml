@@ -29,6 +29,7 @@ ScrollView {
     readonly property real freeBytes: typeof volume.free_bytes === "number" ? volume.free_bytes : -1
     readonly property bool lowSpace: reserveBytes > 0 && freeBytes >= 0 && freeBytes < reserveBytes
     readonly property bool usesPlannedRoformer: planComponents.indexOf("roformer") >= 0
+    readonly property bool activeInPlan: !!component.id && planComponents.indexOf(component.id) >= 0
     readonly property bool idle: !controller.workBusy && !controller.loading
     readonly property var sourceChoices: controller.downloadSources
     readonly property string sourceHint: controller.downloadSource === "direct" ? ""
@@ -36,6 +37,8 @@ ScrollView {
             controller.downloadSource === "modelscope" || controller.downloadSource === "github-release"
             ? "所选方案不经过 Hugging Face；Python 和 PyTorch 依赖由各自的镜像提供。"
             : "PyPI 只用于普通依赖，SJTU 只用于 PyTorch。连不上 Hugging Face 时可直接选魔搭或 GitHub。")
+        : component.id === "roformer_onnx" ? controller.text(
+            "ONNX 权重支持直连或加速源下载；隔离 onnxruntime-webgpu 1.27.0 仍单独保存。")
         : component.id === "chinese" ? controller.text(
             "HF-Mirror 可能跳回 Hugging Face；暂无核验通过的独立来源。")
         : ""
@@ -74,78 +77,51 @@ ScrollView {
             : controller.text("其他可选")
     }
 
+    function targetTierSuffix() {
+        if (component.id === "roformer")
+            return controller.runtime === "cuda" ? " · GPU (CUDA)" : " · CPU"
+        if (component.id === "roformer_onnx")
+            return controller.onnxPrecision === "fp16" ? " · 20s FP16" : " · 10s FP16"
+        return ""
+    }
     function healthText() {
         const rows = []
         const installedList = health.installed_runtimes
+        const installedPrecs = health.installed_precisions
         if (Array.isArray(installedList) && installedList.length > 0) {
-            const labels = installedList.map(rt => rt === "cuda" ? "GPU (CUDA)" : "CPU")
-            rows.push(controller.text("已装运行库") + "  " + labels.join(" + "))
+            rows.push(controller.text("已装运行库") + "  " + installedList.map(rt => rt === "cuda" ? "GPU (CUDA)" : "CPU").join(" + "))
+        } else if (Array.isArray(installedPrecs) && installedPrecs.length > 0) {
+            rows.push(controller.text("已装档位") + "  " + installedPrecs.map(p => p === "fp16" ? "20s FP16" : "10s FP16").join(" + "))
         } else if (health.runtime) {
             rows.push(controller.text("已装运行库") + "  " + health.runtime.toUpperCase())
         }
         if (component.installed_bytes > 0)
-            rows.push(controller.text(health.installed_estimate ? "安装体积（清单估算）" : "已安装")
-                      + "  " + sizeLabel(component.installed_bytes))
+            rows.push(controller.text(health.installed_estimate ? "安装体积（清单估算）" : "已安装") + "  " + sizeLabel(component.installed_bytes))
         if (health.expected_files > 0)
             rows.push(controller.text("完整文件") + "  " + health.complete_files + " / " + health.expected_files)
         if (health.source)
-            rows.push(controller.text("来源依据") + "  " + controller.text(health.source)
-                      + (health.version ? " · " + health.version : ""))
+            rows.push(controller.text("来源依据") + "  " + controller.text(health.source) + (health.version ? " · " + health.version : ""))
         if (health.scope)
             rows.push(controller.text(health.scope))
         return rows.join("\n")
     }
-
     function lastCheckText() {
         const parts = []
-        if (lastCheck.message)
-            parts.push(lastCheck.message)
-        if (typeof lastCheck.checked === "number") {
+        if (lastCheck.message) parts.push(lastCheck.message)
+        if (typeof lastCheck.checked === "number")
             parts.push(typeof lastCheck.expected === "number" && lastCheck.expected > 0
                 ? controller.text("已核对 {0} / {1} 个文件").replace("{0}", lastCheck.checked).replace("{1}", lastCheck.expected)
                 : controller.text("已核对 {0} 个文件").replace("{0}", lastCheck.checked))
-        }
-        if (lastCheck.verified === true)
-            parts.push(controller.text("结果：通过"))
-        else if (lastCheck.state === "cancelled")
-            parts.push(controller.text("校验已取消。"))
-        else if (lastCheck.state)
-            parts.push(controller.text("结果：未通过"))
+        if (lastCheck.verified === true) parts.push(controller.text("结果：通过"))
+        else if (lastCheck.state === "cancelled") parts.push(controller.text("校验已取消。"))
+        else if (lastCheck.state) parts.push(controller.text("结果：未通过"))
         return parts.length > 0 ? parts.join(" · ") : controller.text("尚未执行完整校验")
     }
-
     function installActionText() {
-        if (component.status === "ready")
-            return controller.text("修复 / 重新安装")
-        if (component.status === "damaged")
-            return controller.text("修复安装")
-        if (component.status === "partial")
-            return controller.text("继续下载 / 修复")
-        return controller.text("下载并安装")
-    }
-
-    component PlanMetric: ColumnLayout {
-        required property string label
-        required property string value
-        property color valueColor: page.theme.text
-        spacing: Math.round(4 * page.theme.scale)
-        Text {
-            Layout.fillWidth: true
-            text: parent.label
-            font.pixelSize: Math.round(11 * page.theme.scale)
-            color: page.theme.muted
-            elide: Text.ElideRight
-            textFormat: Text.PlainText
-        }
-        Text {
-            Layout.fillWidth: true
-            text: parent.value
-            font.pixelSize: Math.round(19 * page.theme.scale)
-            font.weight: Font.DemiBold
-            color: parent.valueColor
-            elide: Text.ElideRight
-            textFormat: Text.PlainText
-        }
+        const base = component.status === "ready" ? "修复 / 重新安装"
+            : component.status === "damaged" ? "修复安装"
+            : component.status === "partial" ? "继续下载 / 修复" : "下载并安装"
+        return controller.text(base) + targetTierSuffix()
     }
 
     component CatalogEntry: ItemDelegate {
@@ -192,14 +168,34 @@ ScrollView {
                 ColumnLayout {
                     Layout.fillWidth: true
                     spacing: Math.round(2 * page.theme.scale)
-                    Text {
+                    RowLayout {
                         Layout.fillWidth: true
-                        text: page.controller.text(entry.title)
-                        color: page.theme.text
-                        font.pixelSize: Math.round(13 * page.theme.scale)
-                        font.weight: Font.DemiBold
-                        elide: Text.ElideRight
-                        textFormat: Text.PlainText
+                        spacing: Math.round(5 * page.theme.scale)
+                        Text {
+                            Layout.fillWidth: true
+                            text: page.controller.text(entry.title)
+                            color: page.theme.text
+                            font.pixelSize: Math.round(13 * page.theme.scale)
+                            font.weight: Font.DemiBold
+                            elide: Text.ElideRight
+                            textFormat: Text.PlainText
+                        }
+                        Rectangle {
+                            visible: page.planComponents.indexOf(entry.componentId) >= 0
+                            Layout.preferredHeight: Math.round(17 * page.theme.scale)
+                            Layout.preferredWidth: inUseText.implicitWidth + Math.round(8 * page.theme.scale)
+                            radius: height / 2
+                            color: Qt.rgba(page.theme.accent.r, page.theme.accent.g, page.theme.accent.b, page.theme.dark ? 0.20 : 0.14)
+                            Text {
+                                id: inUseText
+                                anchors.centerIn: parent
+                                text: page.controller.text("使用中")
+                                color: page.theme.accent
+                                font.pixelSize: Math.round(9 * page.theme.scale)
+                                font.weight: Font.DemiBold
+                                textFormat: Text.PlainText
+                            }
+                        }
                     }
                     Text {
                         Layout.fillWidth: true
@@ -300,7 +296,7 @@ ScrollView {
                 Layout.fillWidth: page.stacked
                 Layout.preferredWidth: Math.round(284 * page.theme.scale)
                 Layout.alignment: Qt.AlignTop
-                Layout.preferredHeight: Math.round(370 * page.theme.scale)
+                Layout.preferredHeight: Math.round(440 * page.theme.scale)
                 color: page.theme.surface
                 radius: page.theme.radiusLg !== undefined ? page.theme.radiusLg : Math.round(11 * page.theme.scale)
                 border.color: page.theme.lineSubtle !== undefined ? page.theme.lineSubtle : page.theme.line
@@ -439,6 +435,23 @@ ScrollView {
                             textFormat: Text.PlainText
                         }
                         Rectangle {
+                            visible: page.activeInPlan
+                            Layout.preferredHeight: Math.round(25 * page.theme.scale)
+                            Layout.preferredWidth: activeBadge.width + Math.round(14 * page.theme.scale)
+                            radius: height / 2
+                            color: Qt.rgba(page.theme.accent.r, page.theme.accent.g, page.theme.accent.b, page.theme.dark ? 0.18 : 0.12)
+                            border.color: Qt.rgba(page.theme.accent.r, page.theme.accent.g, page.theme.accent.b, page.theme.dark ? 0.55 : 0.45)
+                            Text {
+                                id: activeBadge
+                                anchors.centerIn: parent
+                                text: page.controller.text("当前已选用")
+                                color: page.theme.accent
+                                font.pixelSize: Math.round(11 * page.theme.scale)
+                                font.weight: Font.DemiBold
+                                textFormat: Text.PlainText
+                            }
+                        }
+                        Rectangle {
                             visible: !!page.component.id
                             readonly property color statusColor: page.component.status === "ready"
                                 ? page.theme.success : page.component.status === "error"
@@ -446,8 +459,8 @@ ScrollView {
                             Layout.preferredHeight: Math.round(25 * page.theme.scale)
                             Layout.preferredWidth: selectedBadge.width + Math.round(16 * page.theme.scale)
                             radius: height / 2
-                            color: Qt.tint(statusColor, Qt.rgba(0, 0, 0, 0.88))
-                            border.color: statusColor
+                            color: Qt.rgba(statusColor.r, statusColor.g, statusColor.b, page.theme.dark ? 0.18 : 0.12)
+                            border.color: Qt.rgba(statusColor.r, statusColor.g, statusColor.b, page.theme.dark ? 0.55 : 0.45)
                             Text {
                                 id: selectedBadge
                                 anchors.centerIn: parent
@@ -488,7 +501,7 @@ ScrollView {
 
                     Text {
                         Layout.fillWidth: true
-                        visible: !!page.component.id && page.usesPlannedRoformer
+                        visible: page.component.id === "roformer" && page.usesPlannedRoformer
                         text: page.controller.text("缺项与已就绪分组按当前准备方案；安装和校验仍以右侧 CPU/CUDA 档为准。")
                         color: page.theme.muted
                         font.pixelSize: Math.round(11 * page.theme.scale)
@@ -496,86 +509,16 @@ ScrollView {
                         textFormat: Text.PlainText
                     }
 
-                    Rectangle {
-                        objectName: "componentPlan"
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: planFacts.implicitHeight + Math.round(24 * page.theme.scale)
-                        radius: Math.round(7 * page.theme.scale)
-                        color: page.theme.raised
-                        border.color: page.theme.line
-                        ColumnLayout {
-                            id: planFacts
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.top: parent.top
-                            anchors.margins: Math.round(12 * page.theme.scale)
-                            spacing: Math.round(10 * page.theme.scale)
-
-                            Text {
-                                Layout.fillWidth: true
-                                text: page.controller.text(!page.component.id ? "从左侧目录选择一个组件查看计划"
-                                    : page.volume.path ? "安装计划" : "本机状态")
-                                color: page.theme.text
-                                font.pixelSize: Math.round(13 * page.theme.scale)
-                                font.weight: Font.DemiBold
-                                textFormat: Text.PlainText
-                            }
-                            RowLayout {
-                                Layout.fillWidth: true
-                                visible: !!page.volume.path
-                                spacing: Math.round(12 * page.theme.scale)
-                                PlanMetric {
-                                    Layout.fillWidth: true
-                                    Layout.preferredWidth: 1
-                                    label: page.controller.text("完整下载大小")
-                                    value: page.component.download_bytes > 0
-                                        ? page.sizeLabel(page.component.download_bytes) : page.controller.text("未知")
-                                }
-                                PlanMetric {
-                                    Layout.fillWidth: true
-                                    Layout.preferredWidth: 1
-                                    label: page.controller.text("建议预留")
-                                    value: page.reserveBytes > 0
-                                        ? page.sizeLabel(page.reserveBytes) : page.controller.text("未知")
-                                }
-                                PlanMetric {
-                                    Layout.fillWidth: true
-                                    Layout.preferredWidth: 1
-                                    label: page.controller.text("卷可用空间")
-                                    value: page.sizeLabel(page.freeBytes)
-                                    valueColor: page.lowSpace ? page.theme.attention : page.theme.text
-                                }
-                            }
-                            Text {
-                                Layout.fillWidth: true
-                                visible: !!page.component.summary
-                                text: page.controller.text(page.component.summary || "")
-                                color: page.theme.text
-                                font.pixelSize: Math.round(12 * page.theme.scale)
-                                wrapMode: Text.Wrap
-                                textFormat: Text.PlainText
-                            }
-                            Text {
-                                Layout.fillWidth: true
-                                visible: !!page.volume.path
-                                text: page.controller.text("组件根") + " · " + (page.volume.path || "")
-                                color: page.theme.muted
-                                font.pixelSize: Math.round(11 * page.theme.scale)
-                                elide: Text.ElideMiddle
-                                textFormat: Text.PlainText
-                                ToolTip.visible: volumeHover.hovered && !!page.volume.path
-                                ToolTip.text: page.volume.path || ""
-                                HoverHandler { id: volumeHover }
-                            }
-                            Text {
-                                Layout.fillWidth: true
-                                visible: typeof page.health.cache_bytes === "number"
-                                text: page.controller.text("可复用下载缓存") + " · " + page.sizeLabel(page.health.cache_bytes)
-                                color: page.theme.muted
-                                font.pixelSize: Math.round(11 * page.theme.scale)
-                                textFormat: Text.PlainText
-                            }
-                        }
+                    ComponentPlanCard {
+                        theme: page.theme
+                        controller: page.controller
+                        component: page.component
+                        health: page.health
+                        volume: page.volume
+                        reserveBytes: page.reserveBytes
+                        freeBytes: page.freeBytes
+                        lowSpace: page.lowSpace
+                        sizeLabelFn: page.sizeLabel
                     }
 
                     Text {
@@ -712,16 +655,16 @@ ScrollView {
                             theme: page.theme
                             visible: !!page.component.can_verify
                             enabled: page.idle
-                            text: page.controller.text("完整校验")
+                            text: page.controller.text("完整校验") + page.targetTierSuffix()
                             onClicked: page.controller.verifySelected()
                         }
                         UiButton {
                             objectName: "useComponent"
                             theme: page.theme
                             visible: !!page.component.model && !!page.component.can_use
-                            enabled: page.idle
-                            primary: true
-                            text: page.controller.text("使用此方案")
+                            enabled: page.idle && !page.activeInPlan
+                            primary: !page.activeInPlan
+                            text: page.controller.text(page.activeInPlan ? "当前已选用" : "使用此方案")
                             onClicked: page.controller.useComponent()
                         }
                     }
@@ -762,31 +705,44 @@ ScrollView {
                         }
                     }
 
-                    RowLayout {
+                    ColumnLayout {
                         Layout.fillWidth: true
                         visible: page.controller.operation.state !== "idle"
-                        spacing: Math.round(8 * page.theme.scale)
-                        Text {
+                        spacing: Math.round(5 * page.theme.scale)
+                        UiProgressBar {
                             Layout.fillWidth: true
-                            text: (page.controller.operation.component ? page.controller.operation.component + " · " : "")
-                                + page.controller.text(page.controller.operation.message || "组件任务进行中")
-                                + (page.controller.operation.total > 0
-                                   && page.controller.busy
-                                   ? " · " + page.controller.operation.done + " / " + page.controller.operation.total : "")
-                            color: page.theme.muted
-                            font.pixelSize: Math.round(11 * page.theme.scale)
-                            wrapMode: page.controller.operation.state === "failed" ? Text.WrapAnywhere : Text.NoWrap
-                            elide: page.controller.operation.state === "failed" ? Text.ElideNone : Text.ElideRight
-                            textFormat: Text.PlainText
-                        }
-                        UiButton {
-                            objectName: "componentPlanCancel"
                             theme: page.theme
-                            quiet: true
                             visible: page.controller.busy
-                            enabled: page.controller.operation.state === "running"
-                            text: page.controller.text("取消")
-                            onClicked: page.controller.cancelOperation()
+                            indeterminate: !(page.controller.operation.total > 0)
+                            value: page.controller.operation.total > 0
+                                ? Math.min(1, page.controller.operation.done / page.controller.operation.total) : 0
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: Math.round(8 * page.theme.scale)
+                            Text {
+                                Layout.fillWidth: true
+                                text: (page.controller.operation.component ? page.controller.operation.component + " · " : "")
+                                    + page.controller.text(page.controller.operation.message || "组件任务进行中")
+                                    + (page.controller.operation.total > 0 && page.controller.busy
+                                       ? " · " + (page.controller.operation.total > 100000
+                                           ? page.sizeLabel(page.controller.operation.done) + " / " + page.sizeLabel(page.controller.operation.total)
+                                           : page.controller.operation.done + " / " + page.controller.operation.total) : "")
+                                color: page.theme.muted
+                                font.pixelSize: Math.round(11 * page.theme.scale)
+                                wrapMode: page.controller.operation.state === "failed" ? Text.WrapAnywhere : Text.NoWrap
+                                elide: page.controller.operation.state === "failed" ? Text.ElideNone : Text.ElideRight
+                                textFormat: Text.PlainText
+                            }
+                            UiButton {
+                                objectName: "componentPlanCancel"
+                                theme: page.theme
+                                quiet: true
+                                visible: page.controller.busy
+                                enabled: page.controller.operation.state === "running"
+                                text: page.controller.text("取消")
+                                onClicked: page.controller.cancelOperation()
+                            }
                         }
                     }
                 }

@@ -438,6 +438,10 @@
       "source": "src/quick_ui/ComponentsPage.qml"
     },
     {
+      "file": "quick_ui/ComponentPlanCard.qml",
+      "source": "src/quick_ui/ComponentPlanCard.qml"
+    },
+    {
       "file": "quick_ui/RoformerOnnxBar.qml",
       "source": "src/quick_ui/RoformerOnnxBar.qml"
     },

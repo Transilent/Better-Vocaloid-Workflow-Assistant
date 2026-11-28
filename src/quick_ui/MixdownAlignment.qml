@@ -41,7 +41,7 @@ ColumnLayout {
     spacing: Math.round(7 * theme.scale)
 
     function tr(message) {
-        return typeof quickTranslation !== "undefined" ? quickTranslation.text(message) : message;
+        return typeof quickTranslation !== "undefined" && quickTranslation ? quickTranslation.text(message) : message;
     }
     function clamp(value, low, high) { return Math.min(high, Math.max(low, value)); }
     function time(ms, precise) {

@@ -12,7 +12,7 @@ Rectangle {
     readonly property real s: theme.scale || 1.0
 
     function vwaTr(text) {
-        return typeof quickTranslation !== "undefined" ? quickTranslation.text(text) : text
+        return typeof quickTranslation !== "undefined" && quickTranslation ? quickTranslation.text(text) : text
     }
 
     visible: items.length > 0

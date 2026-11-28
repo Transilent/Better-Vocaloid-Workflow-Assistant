@@ -261,13 +261,16 @@ def _roformer_row(runtime):
         else:
             verify_note = '元数据检查通过；尚未执行完整 SHA-256 校验。'
         if len(installed_runtimes) == 2:
+            status_text = '已就绪（CUDA+CPU）'
             detail = f'GPU (CUDA) 与 CPU 运行库均已独立安装，可自由切换无需重新下载。{verify_note}'
         elif runtime == 'cuda':
+            status_text = '已就绪（CUDA）'
             detail = f'GPU (CUDA) 运行库已安装（同时支持 CPU 推理，无需另装 CPU 版）；CPU 独立版未安装。{verify_note}'
         else:
+            status_text = '已就绪（CPU）'
             detail = f'CPU 运行库已安装；GPU (CUDA) 运行库未安装（后续加装 CUDA 不会覆盖现有 CPU 版）。{verify_note}'
         return _row(
-            'roformer', 'ready', detail=detail,
+            'roformer', 'ready', status_text=status_text, detail=detail,
             download=download, installed=installed, required=required,
             can_install=True, can_verify=True, can_use=True, model=model, health=health, download_items=items,
         )
@@ -275,18 +278,20 @@ def _roformer_row(runtime):
     if installed_runtimes:
         other_runtime = installed_runtimes[0]
         if other_runtime == 'cuda' and runtime == 'cpu':
+            status_text = '已装 CUDA · CPU 未装'
             detail = (
                 '已安装 GPU (CUDA) 运行库（已自带 CPU 推理能力，在准备工作流中可直接选择 CPU，无需另行下载 CPU 版）；'
                 '当前查看的 CPU 独立运行库未安装，若加装也会独立保存，不会覆盖 CUDA 版。'
             )
         else:
+            status_text = '已装 CPU · CUDA 未装'
             detail = (
                 '已安装 CPU 运行库；当前选择的 GPU (CUDA) 运行库尚未安装。'
                 '下载安装 CUDA 版会独立保存，不会覆盖已安装的 CPU 版。'
             )
         return _row(
             'roformer', 'missing',
-            status_text='当前目标未安装',
+            status_text=status_text,
             detail=detail,
             download=download, installed=0, required=required,
             can_install=True, can_verify=False, can_use=False, model=model, health=health, download_items=items,
@@ -451,24 +456,30 @@ def _roformer_onnx_row(precision=None):
     label_map = {'fp16_10s': '10s FP16', 'fp16': '20s FP16'}
     target_label = label_map[target_prec]
     if target_ready:
+        onnx_status = (
+            '已就绪（10s+20s）' if len(installed_precisions) == 2
+            else ('已就绪（10s）' if target_prec == 'fp16_10s' else '已就绪（20s）')
+        )
         detail = (
             f'实验性 {target_label} 与隔离 WebGPU 运行库已就绪（默认不启用，可在准备工作流中手动选用）。'
             f'{recommendation["reason"]}'
         )
         return _row(
-            'roformer_onnx', 'ready', detail=detail,
+            'roformer_onnx', 'ready', status_text=onnx_status, detail=detail,
             download=download, installed=expanded, required=required,
             can_install=True, can_verify=True, can_use=True, model=model,
             health=health, download_items=items,
         )
     if installed_precisions:
         other = label_map[installed_precisions[0]]
+        other_short = '10s' if installed_precisions[0] == 'fp16_10s' else '20s'
+        target_short = '10s' if target_prec == 'fp16_10s' else '20s'
         detail = (
             f'已安装实验性 {other}；当前选中的 {target_label} 尚未安装（两档独立存储互不覆盖）。'
             f'{recommendation["reason"]}'
         )
         return _row(
-            'roformer_onnx', 'missing', status_text='当前档位未安装', detail=detail,
+            'roformer_onnx', 'missing', status_text=f'已装 {other_short} · {target_short} 未装', detail=detail,
             download=download, installed=0, required=required,
             can_install=True, can_verify=False, can_use=False, model=model,
             health=health, download_items=items,
