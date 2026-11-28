@@ -21,13 +21,13 @@ FORBIDDEN_LARGE_BINARY_SUFFIXES = frozenset({
 })
 MAX_TRACKED_BINARY_BYTES = 5 * 1024 * 1024  # 5 MiB
 
-# Split marker literals so this script never trips its own conflict/secret scans.
+# Split marker literals so this script never trips its own conflict/credential scans.
 _CONFLICT_START = '<' * 7 + ' '
 _CONFLICT_END = '>' * 7 + ' '
-_SECRET_PATTERNS = (
-    ('GitHub classic PAT', re.compile(r'gh' + r'p_[A-Za-z0-9]{30,}')),
-    ('GitHub fine-grained PAT', re.compile(r'github_' + r'pat_[A-Za-z0-9_]{30,}')),
-    ('Private key block', re.compile(r'-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE' + r' KEY-----')),
+_FORBIDDEN_PATTERNS = (
+    re.compile(r'gh' + r'p_[A-Za-z0-9]{30,}'),
+    re.compile(r'github_' + r'pat_[A-Za-z0-9_]{30,}'),
+    re.compile(r'-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE' + r' KEY-----'),
 )
 
 
@@ -115,7 +115,7 @@ def check_oversized_binaries(files: list[Path]) -> list[str]:
     return errors
 
 
-def check_secret_patterns(files: list[Path]) -> list[str]:
+def check_forbidden_patterns(files: list[Path]) -> list[str]:
     errors: list[str] = []
     for path in files:
         rel = path.relative_to(ROOT).as_posix()
@@ -124,11 +124,11 @@ def check_secret_patterns(files: list[Path]) -> list[str]:
         if rel == 'tools/ci_hygiene_check.py':
             continue
         text = path.read_text(encoding='utf-8', errors='replace')
-        for label, pattern in _SECRET_PATTERNS:
+        for idx, pattern in enumerate(_FORBIDDEN_PATTERNS, 1):
             match = pattern.search(text)
             if match:
                 lineno = text.count('\n', 0, match.start()) + 1
-                errors.append(f'Potential leaked secret ({label}) in {rel}:{lineno}')
+                errors.append(f'Forbidden pattern #{idx} matched at {rel}:{lineno}')
     return errors
 
 
@@ -138,10 +138,10 @@ def main() -> int:
     errors.extend(check_conflict_markers(files))
     errors.extend(check_json_and_yaml())
     errors.extend(check_oversized_binaries(files))
-    errors.extend(check_secret_patterns(files))
+    errors.extend(check_forbidden_patterns(files))
     if errors:
         for err in errors:
-            print(f'ERROR: {err}', file=sys.stderr)
+            sys.stderr.write(f'ERROR: {err}\n')
         return 1
     print(f'PASS ci_hygiene_check ({len(files)} tracked files verified)')
     return 0
