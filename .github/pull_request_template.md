@@ -33,3 +33,4 @@ Describe project/preset/settings/API/dependency changes and migration or recover
 - [ ] 应用代码在 src/、构建配置在 packaging/，已按需准备和登记清单；未提交生成副本、模型、账号或用户数据。 / Source/layout rules followed; generated files and private payloads excluded.
 - [ ] 已如实记录验证、失败和未验证范围。 / Validation and its limits are reported accurately.
 - [ ] 已处理适用的文档、界面翻译及公开接口说明；不适用部分已注明。 / Applicable docs, translations and interface notes are updated.
+- [ ] 无不安全反序列化（如 `yaml.unsafe_load`）、未授权替换默认后端或删减 CI / 回归测试的行为。 / No unsafe deserialization, unrequested default backend replacement, or removal of CI checks/tests.
