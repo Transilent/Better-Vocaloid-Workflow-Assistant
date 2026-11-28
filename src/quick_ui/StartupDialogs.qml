@@ -140,32 +140,24 @@ Item {
     }
 
     function updatePrimaryLabel() {
-        if (updateState === "downloading" || updateState === "applying")
-            return updateStateLabel(updateState)
-        if (snapshot.apply_ready)
-            return tr("重启并安装")
-        if (snapshot.can_update)
-            return tr("立即更新")
-        if (String(snapshot.url || "").length > 0)
-            return tr("打开发布页")
-        return tr("立即更新")
+        if (updateState === "downloading" || updateState === "applying") return updateStateLabel(updateState)
+        if (snapshot.apply_ready) return tr("重启并安装")
+        if (snapshot.can_update) return tr("立即更新")
+        if (snapshot.can_full_migrate) return tr("一键下载并自动迁移")
+        return String(snapshot.url || "").length > 0 ? tr("打开发布页") : tr("立即更新")
     }
 
     function updatePrimaryEnabled() {
-        if (updateState === "downloading" || updateState === "applying")
-            return false
-        if (workBusy && snapshot.apply_ready)
-            return false
-        return !!(snapshot.apply_ready || snapshot.can_update || String(snapshot.url || "").length > 0)
+        if (updateState === "downloading" || updateState === "applying") return false
+        if (workBusy && (snapshot.apply_ready || snapshot.can_full_migrate)) return false
+        return !!(snapshot.apply_ready || snapshot.can_update || snapshot.can_full_migrate || String(snapshot.url || "").length > 0)
     }
 
     function requestUpdatePrimary() {
-        if (snapshot.apply_ready && !workBusy)
-            controller.applyUpdate()
-        else if (snapshot.can_update)
-            controller.downloadUpdate()
-        else if (String(snapshot.url || "").length > 0)
-            controller.openRelease()
+        if (snapshot.apply_ready && !workBusy) controller.applyUpdate()
+        else if (snapshot.can_update) controller.downloadUpdate()
+        else if (snapshot.can_full_migrate && !workBusy) controller.startFullMigration()
+        else if (String(snapshot.url || "").length > 0) controller.openRelease()
     }
 
     function requestDefer(seconds) {
@@ -838,6 +830,12 @@ Item {
                             && root.snapshot.can_cancel
                         text: root.snapshot.auto_restart_active ? root.tr("暂缓安装") : root.tr("取消下载")
                         onClicked: root.controller.cancelUpdate()
+                    }
+                    UiButton {
+                        objectName: "updateOpenRelease"
+                        theme: root.theme; quiet: true; text: root.tr("打开发布页")
+                        visible: !!root.snapshot.can_full_migrate && String(root.snapshot.url || "").length > 0
+                        onClicked: root.controller.openRelease()
                     }
                     UiButton {
                         objectName: "updateImmediate"

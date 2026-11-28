@@ -21,8 +21,8 @@ def _maybe_run_full_migrator():
         source = str(data.get('source') or 'auto').strip()
         if not target_version:
             return None
-        import full_package_migrator
-        rc = full_package_migrator.run_gui(ROOT, target_version, source)
+        import full_package_migrator_ui
+        rc = full_package_migrator_ui.run_gui(ROOT, target_version, source)
         return None if rc == 2 else rc
     except Exception:
         return None

@@ -1292,5 +1292,6 @@
   "已就绪（10s）": "Ready (10s)",
   "已就绪（20s）": "Ready (20s)",
   "已装 10s · 20s 未装": "10s ready · 20s missing",
-  "已装 20s · 10s 未装": "20s ready · 10s missing"
+  "已装 20s · 10s 未装": "20s ready · 10s missing",
+  "一键下载并自动迁移": "Download & Auto-Migrate"
 }
