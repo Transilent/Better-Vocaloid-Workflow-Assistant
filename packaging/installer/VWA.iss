@@ -57,7 +57,11 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 ; Never overwrite existing user config, jobs, presets, accounts, or optional downloaded models on upgrade
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "config.json,jobs\*,user-presets\*,cache\*,publish-packages\*,dependencies\optional\*"; Flags: ignoreversion recursesubdirs createallsubdirs
+#if FileExists(SourceDir + "\config.json")
+Source: "{#SourceDir}\config.json"; DestDir: "{app}"; DestName: "config.json"; Flags: onlyifdoesntexist
+#elif FileExists(SourceDir + "\config.example.json")
 Source: "{#SourceDir}\config.example.json"; DestDir: "{app}"; DestName: "config.json"; Flags: onlyifdoesntexist
+#endif
 
 [Icons]
 Name: "{group}\VWA"; Filename: "{app}\VWA.exe"
