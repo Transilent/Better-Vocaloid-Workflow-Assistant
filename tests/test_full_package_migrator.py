@@ -301,17 +301,28 @@ class FullPackageMigratorTests(unittest.TestCase):
     def test_hop1_bridge_archives_all_cohorts_zero_tkinter(self):
         with tempfile.TemporaryDirectory(dir=APP / 'work', ignore_cleanup_errors=True) as tmp:
             base = Path(tmp)
-            summary = bridge_builder.build_all_legacy_bridges(base, target_version='3.0.0')
+            target_sha = 'c' * 64
+            summary = bridge_builder.build_all_legacy_bridges(
+                base, target_version='3.0.0', target_runtime_sha256=target_sha,
+            )
             self.assertEqual(summary['quick_v2_bridge']['desktop_frontend'], 'quick')
             self.assertEqual(summary['quick_v2_bridge']['qt_version'], '6.10.3')
             manifest = json.loads((base / 'bridge-release-manifest.json').read_text(encoding='utf-8'))
-            self.assertEqual(len(manifest['updates']), 3)
-            self.assertEqual(
-                {u['runtime_sha256'] for u in manifest['updates']},
-                {bridge_builder.LEGACY_RUNTIME_SHAS['1.x'],
-                 bridge_builder.LEGACY_RUNTIME_SHAS['0.4.0'],
-                 bridge_builder.LEGACY_RUNTIME_SHAS['0.3.x']},
-            )
+            self.assertEqual(len(manifest['updates']), 1)
+            route = manifest['updates'][0]
+            self.assertEqual(route['runtime_sha256'], bridge_builder.LEGACY_RUNTIME_SHAS['1.x'])
+            self.assertEqual(route['update']['name'], 'VWA-App-Update-v3.0.0.zip')
+            self.assertEqual(route['runtime_upgrade']['name'], 'VWA-Runtime-Upgrade-v3.0.0.zip')
+            self.assertEqual(route['runtime_upgrade']['target_runtime_sha256'], target_sha)
+            # Frozen select_update_route() compatibility check
+            inv_doc = {
+                'version': '3.0.0', 'update_format': 2, 'target_runtime_sha256': target_sha,
+                'updates': manifest['updates'],
+            }
+            selected = update_apply.select_update_route(inv_doc, bridge_builder.LEGACY_RUNTIME_SHAS['1.x'])
+            self.assertIsNotNone(selected)
+            self.assertEqual(selected['update']['name'], 'VWA-App-Update-v3.0.0.zip')
+
             with zipfile.ZipFile(base / 'VWA-Program-Update.zip') as zf:
                 inv = json.loads(zf.read('update-inventory.json'))
                 update_apply.validate_quick_program([e['file'] for e in inv['entries']])
@@ -321,12 +332,58 @@ class FullPackageMigratorTests(unittest.TestCase):
                 self.assertNotIn('import tkinter', launch_src)
                 compile(launch_src, 'launch.py', 'exec')
 
-            with zipfile.ZipFile(base / 'BVWA-App-Update.zip') as zf:
-                inv1 = json.loads(zf.read('update-inventory.json'))
-                self.assertEqual({e['file'] for e in inv1['entries']}, {'app.py', 'launch.py', 'version.json'})
-                app_src = zf.read('app.py').decode('utf-8')
+            with zipfile.ZipFile(base / 'VWA-App-Update-v3.0.0.zip') as zf_boot, \
+                    zipfile.ZipFile(base / 'VWA-Runtime-Upgrade-v3.0.0.zip') as zf_rt:
+                inv_b = json.loads(zf_boot.read('update-inventory.json'))
+                self.assertEqual({e['file'] for e in inv_b['entries']}, {'app.py', 'version.json', 'tools/update_apply.py'})
+                boot_ver = json.loads(zf_boot.read('version.json'))
+                self.assertTrue(boot_ver['upgrade_pending'])
+                self.assertEqual(boot_ver['runtime_upgrade'], route['runtime_upgrade'])
+                self.assertEqual(zf_boot.read('tools/update_apply.py'), zf_rt.read('tools/update_apply.py'))
+                compile(zf_boot.read('tools/update_apply.py').decode('utf-8'), 'update_apply.py', 'exec')
+
+            with zipfile.ZipFile(base / 'BVWA-App-Update.zip') as zf040:
+                inv040 = json.loads(zf040.read('update-inventory.json'))
+                self.assertEqual(inv040['runtime_sha256'], bridge_builder.LEGACY_RUNTIME_SHAS['0.4.0'])
+                self.assertEqual({e['file'] for e in inv040['entries']}, {'app.py', 'launch.py', 'version.json'})
+                app_src = zf040.read('app.py').decode('utf-8')
                 self.assertNotIn('import tkinter', app_src)
                 compile(app_src, 'app.py', 'exec')
+
+    def test_idle_tab_watchdog_exits_cleanly_when_tab_closes(self):
+        with tempfile.TemporaryDirectory(dir=APP / 'work', ignore_cleanup_errors=True) as tmp:
+            old_root = Path(tmp) / 'VWA-2.1.0'
+            old_root.mkdir()
+            (old_root / 'version.json').write_text(json.dumps({'version': '2.1.0'}), encoding='utf-8')
+            exit_codes: list[int] = []
+            # Run run_gui with very short idle_tab_timeout; simulate one poll then tab close
+            orig_create = migrator_ui.create_web_server
+            port_box: list[int] = []
+
+            def _capture_create(*args, **kwargs):
+                srv, tok, st, ev = orig_create(*args, **kwargs)
+                port_box.append(srv.server_address[1])
+                return srv, tok, st, ev
+
+            def _runner():
+                with patch.object(migrator_ui, 'create_web_server', side_effect=_capture_create):
+                    exit_codes.append(
+                        migrator_ui.run_gui(old_root, '3.0.0', 'direct', bridge_mode=True,
+                                            open_browser=False, idle_tab_timeout=0.4)
+                    )
+
+            t = threading.Thread(target=_runner, daemon=True)
+            t.start()
+            deadline = time.monotonic() + 5.0
+            while not port_box and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(port_box)
+            opener = migrator.build_opener('direct')
+            snap = json.loads(opener.open(f'http://127.0.0.1:{port_box[0]}/api/status').read().decode('utf-8'))
+            self.assertEqual(snap['state'], 'idle')
+            t.join(timeout=5.0)
+            self.assertFalse(t.is_alive(), 'Idle tab watchdog should stop server cleanly after client disconnects')
+            self.assertEqual(exit_codes, [0])
 
 
 if __name__ == '__main__':

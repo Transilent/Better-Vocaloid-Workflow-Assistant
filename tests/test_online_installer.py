@@ -35,7 +35,7 @@ def _make_portable_zip(zip_path: Path, version: str = '3.0.0', *, include_qwen: 
         zf.writestr('VWA/payload.bin', b'VWA3' * (pad_bytes // 4))
         if include_qwen:
             zf.writestr(
-                'VWA/dependencies/vocal2midi/experiments/Qwen3-ASR-1.7B-dml/qwen3_asr_1.7b_q4_k_m.gguf',
+                'VWA/dependencies/vocal2midi/experiments/Qwen3-ASR-1.7B-dml/qwen3_asr_llm.f16.gguf',
                 b'official-qwen-full',
             )
     return zip_path.read_bytes()
@@ -89,9 +89,11 @@ class OnlineInstallerTests(unittest.TestCase):
         if os.name == 'nt' and CSC_PATH.is_file():
             cls._tmpdir = tempfile.TemporaryDirectory(dir=APP / 'work', prefix='online-inst-')
             cls.exe_path = Path(cls._tmpdir.name) / 'VWA-Online-Installer.exe'
+            ps_exe = Path(r'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe')
+            ps_bin = str(ps_exe) if ps_exe.is_file() else 'powershell.exe'
             res = subprocess.run(
                 [
-                    'powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+                    ps_bin, '-NoProfile', '-ExecutionPolicy', 'Bypass',
                     '-File', str(BUILD_SCRIPT),
                     '-OutputPath', str(cls.exe_path),
                     '-Version', '3.0.0',
@@ -176,7 +178,7 @@ class OnlineInstallerTests(unittest.TestCase):
                 self.assertGreaterEqual(stats['range_hits'], 4, 'Expected parallel HTTP Range 206 chunk requests')
                 self.assertTrue((fresh_dir / 'VWA.exe').is_file())
                 self.assertEqual(json.loads((fresh_dir / 'version.json').read_text(encoding='utf-8'))['version'], '3.0.0')
-                self.assertTrue((fresh_dir / 'dependencies/vocal2midi/experiments/Qwen3-ASR-1.7B-dml/qwen3_asr_1.7b_q4_k_m.gguf').is_file())
+                self.assertTrue((fresh_dir / 'dependencies/vocal2midi/experiments/Qwen3-ASR-1.7B-dml/qwen3_asr_llm.f16.gguf').is_file())
                 self.assertEqual(json.loads((fresh_dir / 'cache/appearance.json').read_text(encoding='utf-8'))['ui_language'], 'en')
 
                 # 2) In-place upgrade of existing 2.1.0 directory using JPN variant -> preserves user data
@@ -189,7 +191,7 @@ class OnlineInstallerTests(unittest.TestCase):
                 (upg_dir / 'cache/accounts/bili/cookie.json').write_text('{"session":1}', encoding='utf-8')
                 (upg_dir / 'dependencies/optional/bs-roformer').mkdir(parents=True)
                 (upg_dir / 'dependencies/optional/bs-roformer/installed.json').write_text('{"tier":"cuda"}', encoding='utf-8')
-                manual_q = upg_dir / 'dependencies/vocal2midi/experiments/Qwen3-ASR-1.7B-dml/qwen3_asr_1.7b_q4_k_m.gguf'
+                manual_q = upg_dir / 'dependencies/vocal2midi/experiments/Qwen3-ASR-1.7B-dml/qwen3_asr_llm.f16.gguf'
                 manual_q.parent.mkdir(parents=True, exist_ok=True)
                 manual_q.write_bytes(b'manual-user-qwen')
                 (upg_dir / 'version.json').write_text(json.dumps({'version': '2.1.0'}), encoding='utf-8')
@@ -286,6 +288,65 @@ class OnlineInstallerTests(unittest.TestCase):
             finally:
                 srv_b.shutdown()
                 srv_b.server_close()
+
+    def test_04_resume_from_chunk_state_and_cjk_spaces_path(self):
+        if self.exe_path is None:
+            self.skipTest('Built-in .NET 4.x csc.exe not available on this host')
+
+        with tempfile.TemporaryDirectory(dir=APP / 'work', ignore_cleanup_errors=True) as tmp:
+            base = Path(tmp)
+            jpn_raw = _make_portable_zip(base / 'jpn_resume.zip', version='3.0.0', include_qwen=False, pad_bytes=48000)
+            jpn_sha = _sha256(jpn_raw)
+            chunk_bytes = 12000
+            total_chunks = (len(jpn_raw) + chunk_bytes - 1) // chunk_bytes
+
+            files = {
+                'release-assets.json': json.dumps({'version': '3.0.0'}).encode('utf-8'),
+                'portable-metadata-jpn.json': json.dumps({
+                    'archive': {'name': 'VWA-Windows-x64-JPN.zip', 'bytes': len(jpn_raw), 'sha256': jpn_sha},
+                    'parts': [{'name': 'VWA-Windows-x64-JPN.zip', 'bytes': len(jpn_raw), 'sha256': jpn_sha}],
+                }).encode('utf-8'),
+                'VWA-Windows-x64-JPN.zip': jpn_raw,
+            }
+            srv, base_url, stats = _start_range_server(files)
+            try:
+                # Target directory with CJK characters and spaces + pre-populated resume cache on target drive
+                target_dir = base / '测试 目录 3.0' / 'VWA'
+                cache_dir = target_dir.parent / '.vwa-installer-cache' / '3.0.0-jpn'
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                part_file = cache_dir / 'VWA-Windows-x64-JPN.zip.part'
+                buf = bytearray(len(jpn_raw))
+                buf[:chunk_bytes] = jpn_raw[:chunk_bytes]
+                part_file.write_bytes(bytes(buf))
+                (cache_dir / 'VWA-Windows-x64-JPN.zip.part.state.json').write_text(
+                    json.dumps({'bytes': len(jpn_raw), 'sha256': jpn_sha, 'completed': [0]}),
+                    encoding='utf-8',
+                )
+                r = subprocess.run(
+                    [
+                        str(self.exe_path), '--headless',
+                        '--manifest-base', base_url,
+                        '--version', '3.0.0',
+                        '--variant', 'jpn',
+                        '--target-dir', str(target_dir),
+                        '--route', 'direct',
+                        '--proxy-mode', 'direct',
+                        '--workers', '3',
+                        '--chunk-bytes', str(chunk_bytes),
+                        '--parallel-min', '4096',
+                        '--no-shortcuts', '--no-launch',
+                    ],
+                    capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60,
+                )
+                self.assertEqual(r.returncode, 0, f'Resume/CJK install failed:\n{r.stdout}\n{r.stderr}')
+                # 1 probe Range (0-0) + (total_chunks - 1) resumed chunks -> strictly less than total_chunks + 1
+                self.assertEqual(stats['range_hits'], 1 + (total_chunks - 1))
+                self.assertTrue((target_dir / 'VWA.exe').is_file())
+                self.assertEqual(json.loads((target_dir / 'version.json').read_text(encoding='utf-8'))['version'], '3.0.0')
+                self.assertFalse((target_dir.parent / '.vwa-installer-cache').exists())
+            finally:
+                srv.shutdown()
+                srv.server_close()
 
 
 if __name__ == '__main__':
