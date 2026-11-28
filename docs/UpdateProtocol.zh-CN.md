@@ -28,6 +28,20 @@ VWA 是产品和包名变更，远程仓库及其 Release 地址仍为 `Transile
 
 已发布客户端写入的私有状态格式仍可读取。兼容标识继续保留在安装客户端读取的位置，因此界面名称变更不要求清空设置、任务或登录信息。未变化的模型文件继续原地复用。
 
+## 3.0.0+ 二跳全量迁移器与在线引导安装器
+
+当主版本包含基础运行库升级（例如 3.0.0 升级便携版 Python 安全依赖，`dependencies/manifest.json` 摘要变化）时，VWA 3.0.0 采用 **二跳全量迁移 + 在线引导安装器** 双轨方案：
+
+1. **一跳兼容桥接（按冻结客户端协议分流）**：
+   - `v2.0.0` / `v2.1.0`（Quick）：读取 `release-assets.json` 的 `program_update`（`VWA-Program-Update.zip`）。
+   - `v1.0.0` / `v1.1.0`（Widgets）：读取 `updates` 分流路由，先验证窄三文件引导包 `VWA-App-Update-v3.0.0.zip`（`app.py`、`version.json`、`tools/update_apply.py`），再安装桥接负载 `VWA-Runtime-Upgrade-v3.0.0.zip`。
+   - `v0.4.0`：跳过不匹配的 `program_update`，回退至顶层 `update`（`BVWA-App-Update.zip`）。
+2. **二跳零依赖本地 Web UI 迁移器（`full_package_migrator_ui.py`）**：
+   - 重启后在便携内嵌 Python（无 `tkinter` 依赖）中启动仅绑定 `127.0.0.1`、带随机 CSRF Token 与空闲标签页关闭自动退出看门狗的本地 Web UI。
+   - 自动探测原安装变体（Full / JPN），竞速下载官方分卷包并逐卷校验 SHA-256，解压至新目录后自动迁移 `config.json`（改写旧路径并保留新版内部键）、`jobs/`、`user-presets/`、`cache/accounts/`、`publish-packages/`、`dependencies/optional/` 与已下载的 Qwen3-ASR 权重，最后启动新版本（原目录保持只读不变）。
+3. **在线引导安装器（`VWA-Online-Installer-3.0.0-x64.exe`）**：
+   - 面向新用户及无法通过应用内桥接的极早版本（`v0.3.x` / `v0.4.1`）；零依赖单文件支持 Full / JPN 自选、目标盘临时分片缓存与断点续传，覆盖旧目录时同样执行无损数据迁移。
+
 ## 固定三文件第一跳与旧版别名
 
 兼容第一跳固定包含且只包含三个文件：`app.py`、`version.json` 和 `tools/update_apply.py`。`version.json` 将该小包绑定到目标版本，替换后的 `app.py` 在新界面模块安装前启动迁移窗口。第一跳先校验自身，再准备匹配的运行库与程序增量，并在一次重启前完成其余事务。

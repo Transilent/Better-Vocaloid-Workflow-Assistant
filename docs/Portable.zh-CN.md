@@ -1,68 +1,47 @@
 <p align="center"><img src="assets/app.svg" width="80" alt="VWA 图标"></p>
 
-# VWA（术力口工作流助手）
+# VWA 3.0.0（术力口工作流助手）
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-面向 Windows 的声库工作流助手，支持歌曲准备、调音、简易混音、视频合成与发布资料准备。
+面向 Windows 10/11 x64 的全链路歌声合成工作流助手，涵盖歌曲准备、逐句调音、多轨合唱修音、12 格式工程安全互转、16 轨原生实时混音、视频合成与投稿资料整理。
 
 ## 开始使用
 
-1. 从[发行页](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases)下载全量包 `VWA-Windows-x64.zip` 或 JPN 包 `VWA-Windows-x64-JPN.zip`。全量包请解压到新的可写目录；解压后的顶层文件夹为 `VWA`，进入该文件夹启动 **`VWA.exe`**，并保留程序旁的配套文件夹。
-2. 在**准备工作流**添加 B站 BV／链接或本地歌曲，核对分离、歌词、音符与输出后，点击**开始准备**。
-3. 在**任务与结果**查看音频、MIDI 和工程，并继续中断任务；使用当前设置重做时会创建新任务。
-4. 在**调音工作流**打开任务工程或导入 SVP、SV2、USTX、VPR、VSQX、ACEP 或 UFData，选择要处理的轨道，另存为独立工程。实验风格、音高与曲线加密分别控制，强度可按 1% 拖动或直接输入；请在声库编辑器中合成并试听结果。
-5. 合成歌声干声后，用**简易混音**平衡最多三条歌声与一条伴奏，导出新 WAV，或显式登记为任务 Mixdown。
-6. 按需使用**合成视频**，或将已有成品直接交给**发布**。
+1. **获取方式**：推荐从[发布页](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/latest)直接下载 **`VWA-Online-Installer-3.0.0-x64.exe`**（在线引导安装器，支持自选 Full / JPN、国内镜像竞速与断点续传），或手动下载 Full 分卷便携包 / JPN 单文件便携包。解压后的顶层文件夹为 `VWA`，进入该文件夹双击 **`VWA.exe`**，并保留程序旁的配套目录。
+2. **准备工作流**：拖入本地歌曲或输入 B站 BV／链接（支持批量队列），核对分离、歌词、音符与输出后点击**开始准备**。
+3. **任务与结果**：查看音频、MIDI 和工程，支持搜索筛选、断点续跑与按当前预设重做。
+4. **调音与工程互转**：在**调音工作流**打开任务工程或导入 SVP／SV2（支持 `version: 203+` 独立音符组）、USTX、VPR、VSQX、ACEP 或 UFData，另存为独立工程；需要跨编辑器转换时，在**工程格式互转**页安全互转 12 种格式并导出时间轴 LRC／SRT。
+5. **修音与简易混音**：在**修音与合唱工作台**对多轨人声干声对照参考 MIDI 逐句修音与连续变调试听，再进入**简易混音**（最高 16 轨原生实时引擎，支持 WASAPI 设备热插拔恢复）导出 Mixdown WAV。
+6. **合成视频与发布**：按需合成视频，或将已有成品直接进入**发布**整理封面与平台文案，最后在创作页面手动确认发布。
 
-使用结果前请核对音频、歌词与音符。最终发布由你在平台页面确认。
+> 按 `Ctrl+K` 唤出全局快捷命令，按 `Ctrl+/` 查看快捷键速查；直接拖入音视频或工程文件可自动跳转对应工作区。
 
 ## 选择包型
 
 | 包型 | 文件 | 用途 |
 | --- | --- | --- |
-| 全量包 | `VWA-Windows-x64.zip` | 面向所有用户的干净安装路线，包括新用户和任意旧版本用户；包含完整模型集、运行环境、准备、调音、简易混音、视频合成与发布工作流。 |
-| JPN 包 | `VWA-Windows-x64-JPN.zip` | 保留相同工作流，不含中文 Qwen 权重，可使用日语识别和音符提取。 |
-| 更新包 | 以发行说明为准 | 2.1.0 仅支持正式发行的 1.0.0、1.1.0 和 2.0.0 直接升级；更新 ZIP 不能当作完整安装包。 |
+| 在线引导安装器（推荐） | `VWA-Online-Installer-3.0.0-x64.exe` | 约 139 KB 零依赖单文件，图形化选择 Full 或 JPN，自动镜像竞速、多线程续传并校验解压；覆盖旧目录时自动保留个人数据与模型。 |
+| 全量便携包 (Full) | `VWA-Windows-x64.zip.001`～`.003` + `portable-metadata-full.json` + `Merge-PortableParts.ps1` | 合并后约 4.93 GiB，含中文／英文 Qwen3-ASR 权重与全部基础运行库，解压即用。 |
+| 精简便携包 (JPN) | `VWA-Windows-x64-JPN.zip` | 约 1.55 GiB 单文件，仅省略三份中文 Qwen3-ASR 权重，所有工作台与日语识别完整可用；中文／英文模型可在**模型与组件**按需补装。 |
 
-从 1.0.0、1.1.0 或 2.0.0 更新时，JPN 会保留原来的模型状态：缺省省略的中文权重不会自动下载，已经安装的权重会保留。其他版本请把普通全量包或 JPN 包解压到新目录。
+GitHub 自动生成的 Source code 源码包与更新桥接 ZIP（`VWA-Program-Update.zip`、`VWA-App-Update-*.zip`、`VWA-Runtime-Upgrade-*.zip`、`BVWA-App-Update.zip`）均不含完整运行库，不能单独作为完整安装包解压使用。
 
-JPN 包可直接在准备工作流选择日语识别。需要中文或英文歌词时，可在**模型与组件 → 中文 / 英文歌词识别**下载或修复共用的 Qwen3-ASR 权重。
+## 设置、模型与输出
 
-如提供分卷，请将全部分卷与对应的 `portable-metadata-full.json` 或 `portable-metadata-jpn.json` 放在同一目录，并使用该包附带的合并工具。GitHub 的 Source code 与更新 ZIP 均不含完整运行库。
-
-## 设置与输出
-
-- 在**设置与支持 → 外观 → 界面语言**选择简体中文、日本語或 English，下次启动生效。歌词识别语言在准备工作流单独选择。
-- 外观设置还提供浅色／深色、月光玻璃／纯色材质及界面缩放。
-- Agent／MCP 为独立可选的技术预览，兼容宿主可使用 12 个具名顶层工具；不提供任意命令执行器。详见 [MCP 12 工具说明](docs/AgentMCPStandard.zh-CN.md)。
-- 在设置或模型页面选择自动、直连或支持的加速来源，详见[下载来源](docs/DownloadSources.zh-CN.md)与[界面语言](docs/InterfaceLanguages.zh-CN.md)。
-- 准备支持主唱／和声分轨、参考歌词、中文汉字／拼音、可选音高线和手动 BPM。MIDI、工程与音频可分别选择，在输出区域设置保存目录。
-- 带时间轴的歌词可编辑并导出 SRT／WebVTT；无时间轴文本不会按总时长自动均分字幕。
-- 设置中提供缓存管理，普通清理保留任务结果、模型和登录信息。用户 QQ 群：490619616。
+- **外观与语言**：在**设置与支持 → 外观**切换浅色／深色主题、月光玻璃／纯色材质、界面缩放以及简体中文／日本語／English（下次启动生效）。歌词识别语言在准备工作流单独选择。
+- **可选分离模型**：在**模型与组件**可安装原版 PyTorch BS-RoFormer（支持 GPU CUDA 与 CPU 双运行库共存及权重复用）；AMD 等非 NVIDIA 显卡还可按需开启默认关闭的实验性 **BS-RoFormer ONNX（WebGPU，10s / 20s FP16）**，运行于隔离的 `onnxruntime-webgpu 1.27.0` 子进程。
+- **Agent／MCP（可选）**：独立安装的技术预览，向兼容宿主暴露 12 个具名顶层工具，不提供任意命令执行器。详见 [MCP 12 工具说明](docs/AgentMCPStandard.zh-CN.md)。
+- **下载源与缓存**：在设置或组件页选择自动竞速、GitHub 直连或国内加速镜像，详见[下载来源](docs/DownloadSources.zh-CN.md)。缓存清理默认保护任务结果、模型、预设与账号登录信息。用户 QQ 群：`490619616`。
 
 ## 简易混音与试听
 
-简易混音是独立工作流，可导入声库编辑器导出的最多三条歌声 WAV 和一条伴奏。每轨可调音量、声像和静音／独奏，歌声轨另有时间偏移与混响发送；共享人声总线提供 EQ、压缩和混响。预设与可编辑 A/B 片段都只是试听调整的起点。
-
-连续试听使用同一原生音频流播放整曲，参数和 A/B 在会话中更新。切换页面和最小化保留播放状态，可返回后暂停、继续和定位；旧分段播放器已移除。设备失败时明确停止，由用户点击播放重试。EQ 显示实际处理前后频谱，混音台显示 RMS/采样峰值，GR 为音频块差值估计；混响提供实际发送/返回电平和后台测得的空间衰减。请仍在完整歌曲上检查时间、尾音及设备表现。
-
-首次使用时，在混音界面选择本地的 Pedalboard 0.9.26 Windows x64 wheel。VWA 会校验并解包到 `dependencies/optional/pedalboard/current`，不修改基础运行环境。命令行也可从[支持的下载源](docs/DownloadSources.zh-CN.md)安装。导出新 WAV 后，可在合成视频前显式登记为任务 Mixdown。
-
-## 视频与发布
-
-视频合成为可选步骤。选择已渲染的音频与视频，按需对齐后生成成品。
-
-在发布中选择成品和来源任务，核对封面、标题与署名，再准备所选平台。本家封面来自 B站资料，自选图片与视频截图是独立选项；4:3／16:9 适配按需补边，保留完整原图。
-
-上传资料准备完成后，在平台创作页面核对并手动发布。上传前请保留成品原位置，移动或修改后重新生成资料。
+简易混音已升级至 **16 轨原生实时音频引擎**，支持多条人声与伴奏 WAV 的音量、声像、静音／独奏、时间偏移与独立混响发送，共享人声总线提供 EQ、去齿音、压缩、压限与混响，以及 A/B 响度匹配连续试听。支持 WASAPI 设备枚举、热插拔自动重连、60fps FBO 波形与草稿崩溃恢复。首次使用 Pedalboard 效果时可按界面提示在隔离目录 `dependencies/optional/pedalboard/current` 安装组件。
 
 ## 更新与排错
 
-在 1.0.0、1.1.0 或 2.0.0 的**设置与更新**或**设置与支持**中检查更新，并按界面提示重启安装 2.1.0。兼容更新会保留设置、任务、登录、已安装模型及可选组件；升级前请备份正在编辑的工程。不要手工解压更新包覆盖安装。
+- **旧版本升级至 3.0.0**：`v2.0.0`、`v2.1.0`、`v1.0.0`、`v1.1.0` 与 `v0.4.0` 可在应用内检查更新，经一跳桥接进入零依赖本地 Web UI 全量迁移器，自动下载校验 3.0.0 完整包并无损迁移 `config.json`、`jobs/`、`user-presets/`、`cache/accounts/`、`publish-packages/`、`dependencies/optional/` 与已下载的 Qwen 权重（原旧版目录保持不变）；`v0.3.x` / `v0.4.1` 推荐直接运行 `VWA-Online-Installer-3.0.0-x64.exe` 指向原目录执行无损覆盖升级。
+- **目录完整性**：请保留程序旁的 `dependencies`、`runtime/qt6`、`models`、`assets`、`components` 和 `vendor`。
+- **故障排查**：启动错误见程序目录 `launcher.log`；运行 `tools/Start-Diagnostics.bat` 查看启动诊断，运行 `tools/Check-Dependencies.bat` 核对运行库；反馈问题时可先在应用内点击 **设置与支持 → 本机诊断 → 复制摘要**。
 
-2.1.0 使用 Qt Quick。若旧程序身份或运行库校验不符，请使用完整便携包另行安装。0.4 系列不提供直接升级路线。
-
-保留程序旁的 `dependencies`、`runtime/qt6`、`models`、`assets`、`components` 和 `vendor`。启动错误见 `launcher.log`；`tools/Start-Diagnostics.bat` 显示启动诊断，`tools/Check-Dependencies.bat` 检查运行库。JPN 缺少的中文模型可在需要时从模型页面安装。
-
-项目代码使用 [MIT 许可](LICENSE)，第三方许可见[授权说明](THIRD_PARTY_NOTICES.zh-CN.md)。[项目仓库](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant)。
+项目代码使用 [MIT 许可](LICENSE)，第三方许可见[授权说明](THIRD_PARTY_NOTICES.zh-CN.md)与[v3.0.0 运行库说明](docs/ThirdPartyRuntime.md)。[项目仓库](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant)。

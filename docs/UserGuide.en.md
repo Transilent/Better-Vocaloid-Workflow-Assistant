@@ -1,26 +1,22 @@
-# VWA user guide
-
-Open the [local preset library](PresetLibrary.en.md) under **Settings and support**. Export presets for preparation, mixing, tuning, and styles; imports are appended by default. Tuning presets and drafts can be saved per project.
+# VWA 3.0.0 User Guide
 
 [English](UserGuide.en.md) | [简体中文](UserGuide.zh-CN.md) | [README](../README.md)
 
-## Input
+> **Quick tips**: Press `Ctrl+K` anywhere for the Command Palette, `Ctrl+/` for the shortcut reference, or drag and drop audio, video, or project files onto the window to route directly. Manage the [local preset library](PresetLibrary.en.md) under **Settings & support** (imports append by default).
 
-The [VWA workspace guide](Frontend.en.md) describes the compact preparation layout, independent tuning, appearance settings and result states.
+## Installation & startup
 
-Download the Windows x64 full or JPN package from the [2.1.0 release](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/tag/v2.1.0). Both include the runtime. Join the three full-package parts as described in the [portable guide](Portable.en.md), or extract the JPN ZIP directly. Choose a short, writable path.
+Download VWA from the [**VWA v3.0.0 Release Page**](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/latest):
 
-Run **`VWA.exe`** from the extracted top-level `VWA` folder to start without a console window. Open **准备工作流** (Preparation workflow). Under **音乐来源**,
-select **B站 BV 号 / 链接** or **本地音乐文件**. **选择文件** opens the music chooser.
-A local file requires no BV and is copied before decoding. Saved snapshots allow
-resume after the original is moved. The sidebar also contains **模型与组件**
-(Models/components), **任务与结果** (Tasks/results), independent **调音工作流** (Tuning workflow), **合成视频** (Video assembly), **发布** (Publishing), and **设置与支持** (Settings and support).
+- **Online Bootstrapper Installer (Recommended)**: Run `VWA-Online-Installer-3.0.0-x64.exe` (~139 KB, zero dependencies) to choose **Full** or **JPN** visually with automatic mirror racing, multi-threaded HTTP Range resume, and SHA-256 verification.
+- **Portable ZIP**: Follow the [portable guide](Portable.en.md) to merge the 3-part Full archive (~4.93 GiB) or extract the single JPN ZIP (~1.55 GiB) into a short writable folder.
+
+Launch **`VWA.exe`** inside the `VWA` folder (first run includes a 4-scenario guided onboarding flow). Under **Music source**, choose **Bilibili BV/link** (batch queue supported) or **Local audio file** (copied before decoding so original files stay untouched).
 
 ## Upgrading
 
-**Released 1.0.0, 1.1.0 or 2.0.0:** Check for updates in the old app under **Settings and updates** or **Settings and support**, then follow the restart prompt. Both full and JPN retain settings, tasks, presets, sign-in sessions, installed models, and optional components. JPN does not automatically add omitted Chinese weights.
-
-**All other versions:** Extract a full or JPN package into a new folder. Back up editor projects and apply an offered update through the app.
+- **`v2.0.0` / `v2.1.0`, `v1.0.0` / `v1.1.0`, and `v0.4.0`**: Check for updates under **Settings & support** (or **Settings & updates**) and follow the restart prompt. The Hop-1 bridge launches the zero-dependency local Web UI Full-Package Auto-Migrator, downloads and verifies v3.0.0, migrates `config.json`, `jobs/`, `user-presets/`, `cache/accounts/`, `publish-packages/`, `dependencies/optional/`, and downloaded Qwen weights into the new folder, and launches v3.0.0 while keeping your old folder untouched for rollback.
+- **`v0.3.x` / `v0.4.1` or custom installs**: Run **`VWA-Online-Installer-3.0.0-x64.exe`** pointed at your existing directory for non-destructive in-place upgrade. Close running VWA instances and back up active editor projects first; never manually unpack bridge ZIPs over an install.
 
 ## Save location
 
@@ -52,20 +48,13 @@ Lyric search matches straight and curly apostrophes. Batch paste preserves contr
 
 Use **歌词与语言** (Lyrics and language) to search NetEase or import and edit local reference lyrics. Devices remain in the top toolbar's **设备设置**. Logs are available through **处理日志**.
 
-## Optional BS-RoFormer component
+## Optional BS-RoFormer & WebGPU components
 
-Open Models/Components, choose a CPU or CUDA runtime and click **下载并安装**.
-The download is about 0.46 GB for CPU or 3.52 GB for CUDA. Installation preserves
-the base runtime and verifies SHA-256 before loading the original model. A failed
-or cancelled installation does not activate a partial component. Retry to resume
-verified downloads; choose **更多 → 重新安装所选运行库** to repair an existing component.
+**Models & components** displays clear active-tier and readiness badges for every optional component:
 
-Regular status checks installation records and file sizes. Choose **Full verification** for BS-RoFormer to read installed files and check their contents, with progress and cancellation. It does not download or run the model. Older installation records without hashes are reported as unverified; damaged components can be reinstalled. The `optional_components.py --verify` command also returns the verification report.
-
-Choose **使用此模型**, or select BS-RoFormer in processing. CPU and CUDA use the
-same model. **自动** chooses CUDA when available, otherwise CPU. Explicit CUDA
-selection fails clearly if unavailable. Karaoke 2 remains available without this
-download. Retain the complete `dependencies/optional` folder when moving the app.
+- **BS-RoFormer (PyTorch CUDA & CPU coexistence)**: Install CPU (~0.46 GB) and NVIDIA CUDA (~3.52 GB) runtimes side by side sharing one verified model weight set, and switch tiers at any time.
+- **BS-RoFormer ONNX (Experimental / WebGPU, opt-in)**: Isolated `onnxruntime-webgpu 1.27.0` backend for AMD, Intel, and other non-NVIDIA GPUs without altering base DirectML or PyTorch CUDA environments. Choose `10s FP16` for ≤8 GB VRAM / APUs, or `20s FP16` for ≥12 GB VRAM; weights are mirrored on this repository.
+- All downloads verify pinned sizes and SHA-256 digests with resume and cancellation; use **Full verification** to check installed file integrity anytime. Keep `dependencies/optional` when moving installations.
 
 Models separate musical roles, not singer identities. Listen for leakage, missed notes, and lyric errors. More inference steps do not guarantee higher accuracy.
 
@@ -106,13 +95,22 @@ In VOCALOID 6, create a project and use **File → Import** to import `voices.mi
 
 To keep the continuous pitch curve in VOCALOID 6, enable **Write continuous pitch curve**, export VSQX, and use **File → Open** on `voices.vsqx`. Generated pitch bends return to neutral at rests. When the original pitch measurements are available, VWA also keeps unvoiced gaps separate and corrects isolated spikes that meet the repair criteria. Manually edited source projects keep their pitch. See `exports/report.json` for the protection and readback results.
 
-## Tuning projects
+## Tuning, Chorus Workbench, Project Converter & 16-Track Mixing
 
-In **Tuning**, choose **Import tuning project** to open a Synthesizer V Studio 1 or 2 SVP, an OpenUtau USTX, or a VOCALOID 5 or 6 VPR. Choose a vocal track, find the notes by lyric, select a range, then apply a style, freeze the preview, and generate a candidate. USTX and VPR can add dynamics and pitch changes in **Keep original performance** mode. Linked or cropped SV2 groups stay read-only; other independent groups on that track remain editable. The preview shows which curves actually change.
+- **Tuning**: Open task projects or local Synthesizer V Studio 1/2 SVP (`version: 203+` independent note groups supported; shared/cropped groups remain read-only), OpenUtau USTX, VOCALOID 5/6 VPR, VSQX, ACEP, or UFData. Save non-destructively alongside the matching `.tuning.json` sidecar.
+- **Chorus Workbench (New in v3.0.0)**: Load multi-track vocal stems and reference MIDI for phrase-by-phrase review, hand-drawn pitch editing, syllable dynamics, native high-fidelity Signalsmith Stretch auditioning (8 kHz tonality & formant preservation), and stem delivery.
+- **Project Converter (New in v3.0.0)**: Standalone safe conversion across 12 singing-synthesis formats with track splitting, post-convert readback checks, and timed LRC/SRT lyric export—source files are never overwritten.
+- **Simple Mixing (Upgraded to 16-track native engine)**: Up to 16 tracks on a native continuous PCM engine with WASAPI device enumeration and hot-plug reconnect, native limiter/output processing, 60 fps FBO waveforms, and draft crash recovery. See [Simple Mixing Component](SimpleMixingComponent.en.md).
 
-Use **Save As** to write a new file in the same format. Keep the matching `.tuning.json` beside the project. When you import the copy again, VWA recognizes it as a tuned candidate and asks whether to continue editing from that version.
+## Troubleshooting FAQ
 
-USTX 0.5 projects can be previewed. To edit one, open it in OpenUtau and save a copy in the newer format first.
+| Symptom | Suggested fix |
+| --- | --- |
+| **DirectML GPU reset during inference (e.g. `0x887A0005`)** | v3.0.0 automatically falls back to CPU for RMVPE and related inference; if resets recur, select CPU or another adapter under **Device settings**. |
+| **Slow downloads or timeouts** | Switch to **Auto Race** or **Prefer Mirrors** (GitProxy / GH-Proxy / ghfast.top) in the Online Installer, Auto-Migrator, or Settings, and verify your proxy mode (System / Direct / Custom). |
+| **Installer reports files in use** | Close all running `VWA.exe` windows and background tasks, then click **Retry (Resume)**—cached chunks are reused automatically. |
+| **Some SV2 note groups are read-only** | Shared and cropped SV2 groups remain read-only by design; independent groups on the same track can still be edited and saved safely. |
+| **Reporting a bug or crash** | Click **Settings & support → Support & logs → Local Diagnostics → Copy summary**, redact private paths per [SUPPORT.md](../.github/SUPPORT.md), and attach it to a GitHub Issue. |
 
 ## Upload preparation
 

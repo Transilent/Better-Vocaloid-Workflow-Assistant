@@ -1,68 +1,47 @@
 <p align="center"><img src="assets/app.svg" width="80" alt="VWA icon"></p>
 
-# VWA — Vocaloid Workflow Assistant
+# VWA 3.0.0 — Vocaloid Workflow Assistant
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-A Windows assistant for preparing vocal projects, tuning, mixing, assembling videos and preparing uploads.
+An end-to-end Windows 10/11 x64 desktop assistant for song preparation, lyric-driven tuning, multi-track chorus pitch correction, safe 12-format project conversion, 16-track native mixing, video assembly, and publishing prep.
 
 ## Start
 
-1. Download `VWA-Windows-x64.zip` (full) or `VWA-Windows-x64-JPN.zip` (JPN) from [Releases](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases). Extract a full package to a new, writable folder. The extracted top-level folder is `VWA`; start **`VWA.exe`** from that folder and keep the accompanying folders together.
-2. In **Preparation**, add a Bilibili BV/link or local song, then review separation, lyrics, notes and output choices. Select **Start preparation**.
-3. Find the audio, MIDI and projects in **Tasks and results**. Continue interrupted tasks there; reprocessing with current settings creates a new task.
-4. In **Tuning**, open a task project or import an SVP, SV2, USTX or VPR file. Select the tracks to edit and save a separate project. Experimental style, pitch and curve density have separate controls. Drag strength in 1% steps or enter a precise value; synthesize and audition the result in your voice editor.
-5. Render the vocal stems, then use **Simple mixing** to balance up to three vocal WAVs and one accompaniment. Export a new WAV or explicitly register it as the task Mixdown.
-6. Use **Assemble video** if needed, or send an existing finished video directly to **Publishing**.
+1. **Get VWA**: Download **`VWA-Online-Installer-3.0.0-x64.exe`** from [Releases](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/latest) (recommended: pick Full or JPN visually with mirror racing and multi-threaded resume), or download the portable Full split archive / JPN single ZIP. Extract to a short writable folder and launch **`VWA.exe`** inside the `VWA` folder while keeping companion folders together.
+2. **Preparation**: Drop a local song or Bilibili BV/link (batch queue supported), review separation, lyrics, notes, and output options, then select **Start preparation**.
+3. **Tasks & results**: Search, filter, resume interrupted tasks, or reprocess with current settings.
+4. **Tuning & Project Converter**: Open a task or local SVP/SV2 (`version: 203+` independent groups supported), USTX, VPR, VSQX, ACEP, or UFData in **Tuning** and save non-destructively; use **Project Converter** to safely convert between 12 singing-synthesis formats with readback checks and timed LRC/SRT export.
+5. **Chorus Workbench & Simple Mixing**: Polish multi-track vocal stems against reference MIDI in **Chorus Workbench** with native Signalsmith Stretch auditioning, then balance up to 16 tracks in **Simple Mixing** (native WASAPI engine with hot-plug recovery) and export your Mixdown WAV.
+6. **Video & Publishing**: Sync video with Mixdown if needed, prepare covers and platform drafts in **Publishing**, and confirm publication manually on the platform site.
 
-Review audio, lyrics and notes before use. Final publication is confirmed by you on the platform website.
+> Press `Ctrl+K` for the global Command Palette, `Ctrl+/` for keyboard shortcuts, or drag and drop media/project files onto the window to route directly.
 
 ## Choose a package
 
-| Package | File | Use |
+| Package | Files | Purpose |
 | --- | --- | --- |
-| Full | `VWA-Windows-x64.zip` | Clean installation for all users, including new users and users on every older version; includes the complete model set, runtime, preparation, tuning, simple mixing, video assembly and publishing. |
-| JPN | `VWA-Windows-x64-JPN.zip` | The same workflows without the Chinese Qwen weights; Japanese recognition and note extraction remain available. |
-| Update | As listed in the release | 2.1.0 updates only the released 1.0.0, 1.1.0 and 2.0.0 installations. Update ZIPs are not complete installations. |
+| Online Installer (Recommended) | `VWA-Online-Installer-3.0.0-x64.exe` | ~139 KB zero-dependency executable; pick Full or JPN, race mirrors, resume chunks, verify SHA-256, and preserve user data on existing folders. |
+| Portable Full | `VWA-Windows-x64.zip.001`–`.003` + `portable-metadata-full.json` + `Merge-PortableParts.ps1` | ~4.93 GiB merged; includes Chinese/English Qwen3-ASR weights and complete portable runtime. |
+| Portable JPN | `VWA-Windows-x64-JPN.zip` | ~1.55 GiB single ZIP; omits only the three Chinese Qwen3-ASR weights while keeping all studios and Japanese recognition ready. Chinese/English models can be installed later in **Models & components**. |
 
-The update preserves the JPN model setup. It leaves omitted Chinese weights absent and keeps any weights installed separately. For all other versions, extract a full or JPN package into a new folder.
+GitHub Source code archives and bridge ZIPs (`VWA-Program-Update.zip`, `VWA-App-Update-*.zip`, `VWA-Runtime-Upgrade-*.zip`, `BVWA-App-Update.zip`) do not contain a full runtime and must not be extracted manually as standalone installs.
 
-JPN can use Japanese recognition immediately. For Chinese or English lyrics, use **Models and components → Chinese / English lyric recognition** to download, verify or repair the shared Qwen3-ASR weights.
+## Settings, models & outputs
 
-If a download is split, keep all parts with the matching `portable-metadata-full.json` or `portable-metadata-jpn.json` and use the merge helper supplied with that package. GitHub Source code archives and update ZIPs do not include a complete runtime.
+- **Appearance & language**: Configure Light/Dark theme, Moonlight glass/solid surfaces, UI scaling, and English / 简体中文 / 日本語 under **Settings & support → Appearance** (applies on next launch). Lyric recognition language is configured independently in Preparation.
+- **Optional separation models**: Install PyTorch BS-RoFormer (coexisting CUDA and CPU runtimes sharing weights) under **Models & components**; AMD and other non-NVIDIA GPUs can also opt into the experimental isolated **BS-RoFormer ONNX (WebGPU, `10s` / `20s FP16`)** component (`onnxruntime-webgpu 1.27.0`).
+- **Agent / MCP (optional)**: Separate technical preview exposing 12 typed top-level tools without an arbitrary command executor. See [MCP tool reference (ZH)](docs/AgentMCPStandard.zh-CN.md).
+- **Download sources & cache**: Pick Auto Race, GitHub Direct, or accelerated mirrors in Settings or Components (see [download sources](docs/DownloadSources.en.md)). Ordinary cache cleanup protects task outputs, models, presets, and sign-in sessions. User QQ group: `490619616`.
 
-## Settings and outputs
+## Simple mixing & audition
 
-- Choose Chinese, Japanese or English under **Settings and support → Appearance → Interface language**. Changes apply on the next launch. Lyric recognition is set separately in Preparation.
-- Appearance also offers light/dark themes, Moonlight glass/solid panels and interface scaling.
-- Agent/MCP is an optional, separate technical preview that exposes 12 typed top-level tools to a compatible host. It does not add a general command executor. See the [MCP tool reference (Chinese)](docs/AgentMCPStandard.zh-CN.md).
-- Choose automatic, direct or supported accelerated downloads in Settings or Models. See [download sources](docs/DownloadSources.en.md) and [interface languages](docs/InterfaceLanguages.en.md).
-- Preparation supports lead/backing tracks, reference lyrics, Chinese characters/pinyin, optional pitch curves and manual BPM. Select MIDI, editor projects and audio separately; set the save folder in Output.
-- Edit timed lyrics before exporting SRT/WebVTT. Text without timing is not automatically divided into subtitles.
-- Manage caches in Settings. Task outputs, model weights and sign-in sessions are protected from ordinary cache cleanup. VWA user QQ group: 490619616.
+Simple mixing uses a **16-track native continuous PCM audio engine** supporting track level, pan, mute/solo, vocal alignment, reverb sends, shared vocal-bus EQ/de-esser/compressor/limiter/reverb, loudness-matched A/B auditioning, WASAPI device enumeration and hot-plug reconnect, 60 fps FBO waveforms, and draft crash recovery. Optional Pedalboard effects install in isolation under `dependencies/optional/pedalboard/current`.
 
-## Simple mixing and audition
+## Updates & diagnostics
 
-Simple mixing is an independent workflow for up to three vocal WAVs rendered by your singing editor and one accompaniment. Adjust track level, pan and mute/solo; vocal timing and reverb sends; and shared vocal-bus EQ, compression and reverb. Presets and editable A/B segments are starting points for your own listening.
+- **Upgrading to 3.0.0**: Existing `v2.0.0`, `v2.1.0`, `v1.0.0`, `v1.1.0`, and `v0.4.0` installs can check for updates in-app to enter the zero-dependency local Web UI full-package auto-migrator, which downloads and verifies 3.0.0 and copies `config.json`, `jobs/`, `user-presets/`, `cache/accounts/`, `publish-packages/`, `dependencies/optional/`, and downloaded Qwen weights into the new folder while leaving the old folder untouched. For `v0.3.x` / `v0.4.1`, run `VWA-Online-Installer-3.0.0-x64.exe` pointed at your existing folder for non-destructive upgrade.
+- **Folder integrity**: Keep `dependencies`, `runtime/qt6`, `models`, `assets`, `components`, and `vendor` beside `VWA.exe`.
+- **Diagnostics**: Check `launcher.log` for startup errors, run `tools/Start-Diagnostics.bat` for startup diagnostics or `tools/Check-Dependencies.bat` to verify runtime files, and use **Settings & support → Local Diagnostics → Copy summary** when reporting issues.
 
-Continuous preview uses one native audio stream for the complete song. Parameter and A/B changes update that session. Navigation and minimizing preserve playback, position, pause and resume; the old segmented players have been removed. A device failure stops playback explicitly and requires the user to retry. EQ shows measured before/after spectra; channel meters show RMS and sample peaks. Gain reduction is estimated from aligned audio blocks. Reverb displays measured send/return levels and a separately measured impulse decay. Check timing, tails and device behaviour on the complete song.
-
-On first use, select a local Pedalboard 0.9.26 Windows x64 wheel in the mixing workspace. VWA verifies and extracts it under `dependencies/optional/pedalboard/current` without changing the base runtime. The command-line installer can also use a [supported download source](docs/DownloadSources.en.md). Export a new WAV or explicitly register it as a task Mixdown before video assembly.
-
-## Video and publishing
-
-Video assembly is optional. Choose rendered audio and a video, align them if needed, then create the finished video.
-
-In Publishing, choose the finished video and source task, review the cover and credits, then prepare the selected platform. Original Bilibili covers come from metadata; custom images and video frames are separate choices. Cover fitting keeps the full image with padding for 4:3/16:9 when needed.
-
-Review the creator page and confirm publication manually. Keep the finished video in place until upload; regenerate publication files after moving or changing it.
-
-## Updates and diagnostics
-
-In 1.0.0, 1.1.0 or 2.0.0, check for updates in Settings and updates, then follow the restart prompt to install 2.1.0. The update preserves settings, tasks, sign-in sessions, installed models and optional components. Back up projects you are editing before upgrading. Do not unpack an update archive over an installation.
-
-2.1.0 uses Qt Quick. If validation of the old program or runtime fails, use a complete portable archive in a new folder. The 0.4 series has no direct update route.
-
-Keep `dependencies`, `runtime/qt6`, `models`, `assets`, `components` and `vendor` with the executable. Find startup errors in `launcher.log`, open startup diagnostics with `tools/Start-Diagnostics.bat`, or check runtime files with `tools/Check-Dependencies.bat`.
-
-Project code: [MIT license](LICENSE). Third-party terms: [notices](THIRD_PARTY_NOTICES.md). [Project repository](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant).
+Project code: [MIT license](LICENSE). Third-party terms: [notices](THIRD_PARTY_NOTICES.md) and [v3.0.0 runtime notices](docs/ThirdPartyRuntime.md). [Project repository](https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant).
