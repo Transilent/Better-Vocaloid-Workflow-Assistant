@@ -3,7 +3,7 @@ import QtQuick
 Item {
     id: meter
     function vwaTr(message) {
-        return typeof quickTranslation !== "undefined" ? quickTranslation.text(message) : message
+        return typeof quickTranslation !== "undefined" && quickTranslation ? quickTranslation.text(message) : message
     }
     required property QtObject theme
     property real rms: NaN

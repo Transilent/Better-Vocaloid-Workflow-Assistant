@@ -5,7 +5,7 @@ import QtQuick.Layouts
 UiDialog {
     id: dialog
     function vwaTr(message) {
-        return typeof quickTranslation !== "undefined" ? quickTranslation.text(message) : message
+        return typeof quickTranslation !== "undefined" && quickTranslation ? quickTranslation.text(message) : message
     }
     objectName: lyricPurpose === "subtitles" ? "subtitleSourcesDialog" : "preparationSourcesDialog"
     required property QtObject controller

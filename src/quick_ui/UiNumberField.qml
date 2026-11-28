@@ -21,7 +21,7 @@ TextField {
         + (unit.length ? " " + unit : "")
 
     function label(message) {
-        return typeof quickTranslation !== "undefined" ? quickTranslation.text(message) : message;
+        return typeof quickTranslation !== "undefined" && quickTranslation ? quickTranslation.text(message) : message;
     }
     function format(value) {
         return Number(value).toLocaleString(numberLocale, "f", decimals);

@@ -612,13 +612,13 @@ class QuickBridge(QObject):
     def selected(self):
         row = dict(self.state.selected)
         if row:
-            key = self._component_check_key(row['id'], self.state.runtime)
+            key = self._component_check_key(row['id'], self.state.runtime, self.state.onnx_precision)
             row['last_check'] = self._component_checks.get(key, {})
         return row
 
     @staticmethod
-    def _component_check_key(component_id, runtime):
-        return component_id, runtime if component_id == 'roformer' else ''
+    def _component_check_key(component_id, runtime, precision=''):
+        return component_id, (runtime if component_id == 'roformer' else precision if component_id == 'roformer_onnx' else '')
 
     @Property('QVariantMap', notify=componentTaskPlanChanged)
     def componentTaskPlan(self):
@@ -1173,7 +1173,7 @@ class QuickBridge(QObject):
                 message = str(error)[:1600]
                 value = status, message, {'state': status, 'errors': [{'message': message}]} if status == 'failed' else None
             status, message, report = value
-            key = self._component_check_key(request.component_id, request.runtime)
+            key = self._component_check_key(request.component_id, request.runtime, request.precision)
             if request.action == 'verify' and report is not None:
                 self._component_checks[key] = {**components.verification_summary(report), 'message': message}
             elif request.action == 'install':

@@ -111,6 +111,8 @@ shared_tests = (
     'test_project_convert.py', 'test_project_convert_e2e.py',
     'test_updater_and_infra_upgrade.py', 'test_tier1_infra.py', 'test_tier2_infra.py', 'test_tier3_ux.py',
     'test_amd_gpu_foundation.py',
+    'test_hotfix_v211_regressions.py',
+    'test_roformer_onnx_experimental.py',
 )
 
 # L1 integration tests that depend on external multi-GB runtime packages/binaries

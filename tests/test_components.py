@@ -127,6 +127,8 @@ except ValueError:
     passed.append('cleanup-boundary')
 assert components.status(SCRATCH / 'never-installed') == {
     'ready': False, 'runtime': None,
+    'installed_runtimes': [],
+    'runtimes': {'cuda': 'missing', 'cpu': 'missing'},
     'verification': {'level': 'metadata', 'content_verified': False,
                      'sha256_checked': False, 'state': 'not_ready'},
 }

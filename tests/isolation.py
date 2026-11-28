@@ -69,10 +69,21 @@ def application_copy(source, parent, *, include_runtime=True):
                 shutil.copytree(_native(target), _native(sandbox / name), copy_function=_resource_file,
                                 ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
         if not include_runtime:
-            manifest = source / 'dependencies/manifest.json'
-            if manifest.is_file():
-                (sandbox / 'dependencies').mkdir(parents=True, exist_ok=True)
-                shutil.copy2(manifest, sandbox / 'dependencies/manifest.json')
+            for rel_dep in (
+                'dependencies/manifest.json',
+                'dependencies/vocal2midi/inference/__init__.py',
+                'dependencies/vocal2midi/inference/device_utils.py',
+                'dependencies/vocal2midi/inference/API/rmvpe_api.py',
+                'dependencies/vocal2midi2/inference/__init__.py',
+                'dependencies/vocal2midi2/inference/device_utils.py',
+                'dependencies/vocal2midi2/inference/API/rmvpe_api.py',
+                'dependencies/vocal2midi2/inference/qwen3asr_dml/runtime.py',
+            ):
+                dep_file = source / rel_dep
+                if dep_file.is_file():
+                    dst = sandbox / rel_dep
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(dep_file, dst)
         config = sandbox / 'packaging/config.example.json'
         if not config.is_file():
             config = sandbox / 'config.example.json'

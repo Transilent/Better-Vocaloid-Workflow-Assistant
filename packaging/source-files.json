@@ -133,6 +133,7 @@
     "src/workspace_routes.py",
     "src/workspace_settings.py",
     "src/quick_ui/ComponentsPage.qml",
+    "src/quick_ui/ComponentPlanCard.qml",
     "src/quick_ui/RoformerOnnxBar.qml",
     "src/quick_ui/RoformerRuntimeBar.qml",
     "src/quick_ui/DiagnosticsDialog.qml",

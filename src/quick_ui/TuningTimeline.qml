@@ -4,7 +4,7 @@ import QtQuick.Controls
 Item {
     id: timeline
     function vwaTr(message) {
-        return typeof quickTranslation !== "undefined" ? quickTranslation.text(message) : message
+        return typeof quickTranslation !== "undefined" && quickTranslation ? quickTranslation.text(message) : message
     }
     objectName: "tuningTimelineCanvas"
     required property QtObject theme
