@@ -29,11 +29,39 @@ def _digest(payload: bytes) -> str:
 
 
 def _load_module(name: str, path: Path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
+    import types
+
+    added_stubs: list[str] = []
+    if 'librosa' not in sys.modules:
+        try:
+            __import__('librosa')
+        except ImportError:
+            sys.modules['librosa'] = types.ModuleType('librosa')
+            added_stubs.append('librosa')
+    if 'scipy.signal' not in sys.modules:
+        try:
+            __import__('scipy.signal')
+        except ImportError:
+            scipy_mod = sys.modules.get('scipy')
+            if scipy_mod is None:
+                scipy_mod = types.ModuleType('scipy')
+                sys.modules['scipy'] = scipy_mod
+                added_stubs.append('scipy')
+            sig_mod = types.ModuleType('scipy.signal')
+            sig_mod.get_window = lambda *a, **kw: None
+            sig_mod.resample_poly = lambda *a, **kw: None
+            sys.modules['scipy.signal'] = sig_mod
+            scipy_mod.signal = sig_mod
+            added_stubs.append('scipy.signal')
+    try:
+        spec = importlib.util.spec_from_file_location(name, path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[name] = mod
+        spec.loader.exec_module(mod)
+        return mod
+    finally:
+        for mod_name in reversed(added_stubs):
+            sys.modules.pop(mod_name, None)
 
 
 class HotfixRegressionsTest(unittest.TestCase):
