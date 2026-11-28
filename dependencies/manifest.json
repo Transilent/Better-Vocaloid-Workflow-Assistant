@@ -4,7 +4,7 @@
   "platform": "Windows x86_64",
   "legacy_tool_paths": {},
   "files": 11259,
-  "bytes": 7511288709,
+  "bytes": 7511288708,
   "entries": [
     {
       "file": "dependencies/browser/chrome/154.0.8037.98/154.0.8037.98.manifest",
@@ -49398,8 +49398,8 @@
     },
     {
       "file": "dependencies/vocal2midi2/inference/io/audio_io.py",
-      "bytes": 4042,
-      "sha256": "1daa213d944210bc804eb7e1acca4527f259340feb6b8f1f0c0bd4ff7d49599e"
+      "bytes": 4041,
+      "sha256": "f72251763358ec9ed98a53df552180a3da97110e2243b4f4ea21a1b48890a71c"
     },
     {
       "file": "dependencies/vocal2midi2/inference/io/note_io.py",
