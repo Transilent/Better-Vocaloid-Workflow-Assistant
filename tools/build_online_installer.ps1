@@ -76,5 +76,12 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $info = Get-Item -LiteralPath $OutputPath
-$sha = (Get-FileHash -LiteralPath $OutputPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$shaAlgo = [System.Security.Cryptography.SHA256]::Create()
+$stream = [System.IO.File]::OpenRead($info.FullName)
+try {
+    $sha = ([System.BitConverter]::ToString($shaAlgo.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+} finally {
+    $stream.Dispose()
+    $shaAlgo.Dispose()
+}
 Write-Host ("BUILT_ONLINE_INSTALLER path={0} bytes={1} sha256={2}" -f $info.FullName, $info.Length, $sha)
