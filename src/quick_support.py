@@ -1092,84 +1092,81 @@ class QuickSupport(QObject):
     @Slot()
     def cancelUpdate(self):
         if self.state.auto_restart_active:
-            self._restart_timer.stop()
-            self.state.defer_auto_restart('已暂缓自动安装。')
-            self.startupChanged.emit()
-            return
+            self._restart_timer.stop(); self.state.defer_auto_restart('已暂缓自动安装。')
+            self.startupChanged.emit(); return
         if self.worker.kind == 'update-download':
             self.state.update.update(update_state='cancelling', message='正在取消更新下载…')
-            self.worker.cancel()
-            self.startupChanged.emit()
+            self.worker.cancel(); self.startupChanged.emit()
 
     @Slot()
     def applyUpdate(self):
         if self.state.update_plan is None:
-            self.state.update.update(message='没有可安装的已校验更新计划。')
-            self.startupChanged.emit()
-            return
-        self._restart_timer.stop()
-        self.state.auto_restart_active = False
-        self._apply_restart_plan()
+            self.state.update.update(message='没有可安装的已校验更新计划。'); self.startupChanged.emit(); return
+        self._restart_timer.stop(); self.state.auto_restart_active = False; self._apply_restart_plan()
+
+    @Slot()
+    def startFullMigration(self):
+        """Write full-package migrator handoff and launch standalone downloader/migrator."""
+        blockers = self._active_operation_names()
+        if blockers:
+            self.state.block_manual_restart(blockers)
+            self.state.update.update(message='请等待' + '、'.join(blockers) + '结束后再启动全量升级。')
+            self.startupChanged.emit(); return
+        version = str(self.state.release.get('version') or '').strip()
+        if not version or not self.state.release.get('available') or not self.state.installed_quick_frontend():
+            self.openRelease(); return
+        source = str(self.state.values.get('download_source') or 'auto')
+        try:
+            import full_package_migrator
+            full_package_migrator.write_handoff(ROOT, version, source)
+            if environment_value('VWA_TESTING') == '1':
+                self.state.update.update(update_open=False, update_state='available', message='测试模式已写入全量迁移交接，未自动重启。')
+                self.startupChanged.emit(); return
+            full_package_migrator.spawn_migrator_process(ROOT, version, source)
+        except OSError as exc:
+            self._error(exc); return
+        self.owner.closeReady.emit()
 
     @Slot()
     def acknowledgeJustUpdated(self):
-        if self.state.acknowledge_just_updated(ROOT):
-            self.startupChanged.emit()
+        if self.state.acknowledge_just_updated(ROOT): self.startupChanged.emit()
 
     @Slot()
     def openRelease(self):
         version = self.state.release.get('version')
-        url = updater.RELEASES + (f'/tag/v{version.removeprefix("v")}' if version else '/latest')
-        QDesktopServices.openUrl(QUrl(url))
+        QDesktopServices.openUrl(QUrl(updater.RELEASES + (f'/tag/v{version.removeprefix("v")}' if version else '/latest')))
 
     @Slot()
-    def openFeedback(self):
-        QDesktopServices.openUrl(QUrl(FEEDBACK_URL))
-
+    def openFeedback(self): QDesktopServices.openUrl(QUrl(FEEDBACK_URL))
     @Slot()
-    def copyCommunity(self):
-        QGuiApplication.clipboard().setText(QQ_GROUP)
-
+    def copyCommunity(self): QGuiApplication.clipboard().setText(QQ_GROUP)
     @Slot()
     def showDiagnostics(self):
-        self._diagnostics.update(open=True, message='')
-        self.refreshDiagnostics()
+        self._diagnostics.update(open=True, message=''); self.refreshDiagnostics()
 
     @Slot()
     def refreshDiagnostics(self):
-        if not self._diagnostics['open'] or self._diagnostic_lane.kind:
-            return
-        self._diagnostics.update(busy=True, message='')
-        self.diagnosticsChanged.emit()
+        if not self._diagnostics['open'] or self._diagnostic_lane.kind: return
+        self._diagnostics.update(busy=True, message=''); self.diagnosticsChanged.emit()
         active = getattr(self.owner, 'activeOperations', ())
         task_state = self.owner.preparationTask['state']
         windows = sys.getwindowsversion() if sys.platform == 'win32' else None
         system = (f'Windows {11 if windows.build >= 22000 else 10} (build {windows.build})'
                   if windows else f'{platform.system()} {platform.release()}')
         render_backend = str(self.state.values.get('render_backend', 'auto'))
-        if environment_value('VWA_RENDER_FALLBACK') == '1':
-            render_label = f'{render_backend} (auto-fallback: software)'
-        else:
-            render_label = render_backend
+        render_label = f'{render_backend} (auto-fallback: software)' if environment_value('VWA_RENDER_FALLBACK') == '1' else render_backend
         proxy_mode = str(self.state.values.get('network_proxy_mode', 'direct'))
         native_dir = ROOT / 'components/native-audio'
-        native_status = ', '.join(
-            f'{dll}={"ok" if (native_dir / dll).is_file() else "missing"}'
-            for dll in ('vwa_chorus_pitch.dll', 'vwa_limiter.dll', 'vwa_native_output.dll')
-        )
+        native_status = ', '.join(f'{d}={"ok" if (native_dir / d).is_file() else "missing"}'
+                                  for d in ('vwa_chorus_pitch.dll', 'vwa_limiter.dll', 'vwa_native_output.dll'))
         lines = [
-            f'VWA: {self.version}', f'Qt Quick: {qVersion()}',
-            f'{tr("渲染后端")}: {render_label}',
+            f'VWA: {self.version}', f'Qt Quick: {qVersion()}', f'{tr("渲染后端")}: {render_label}',
             f'{tr("系统")}: {system} ({platform.machine()})',
             f'Python: {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}',
-            f'{tr("界面语言")}: {self.state.values["ui_language"]}',
-            f'{tr("界面缩放")}: {self.state.values["ui_scale"]}%',
-            f'{tr("准备任务状态")}: {task_state}',
-            f'{tr("更新状态")}: {self.state.update["update_state"]}',
-            f'{tr("网络代理模式")}: {proxy_mode}',
-            f'{tr("并行下载数")}: {self.state.values["download_workers"]}',
-            f'{tr("原生音频库")}: {native_status}',
-            f'UTC: {datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S}',
+            f'{tr("界面语言")}: {self.state.values["ui_language"]}', f'{tr("界面缩放")}: {self.state.values["ui_scale"]}%',
+            f'{tr("准备任务状态")}: {task_state}', f'{tr("更新状态")}: {self.state.update["update_state"]}',
+            f'{tr("网络代理模式")}: {proxy_mode}', f'{tr("并行下载数")}: {self.state.values["download_workers"]}',
+            f'{tr("原生音频库")}: {native_status}', f'UTC: {datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S}',
             f'{tr("当前操作")}: {len(active)}',
         ]
         selected = getattr(self.owner, 'selected', {}) or {}

@@ -159,6 +159,12 @@ class SettingsState:
             'notes': _bounded_text(self.release.get('notes')),
             'url': self.release.get('url') or '',
             'can_update': bool(self.release.get('update')),
+            'can_full_migrate': bool(
+                self.release.get('available')
+                and not self.release.get('update')
+                and self.release.get('version')
+                and self.installed_quick_frontend()
+            ),
             'is_runtime_patch': bool(isinstance(self.release.get('update'), dict)
                                      and self.release['update'].get('kind') == 'runtime_patch'),
             'full_package_required': bool(self.release.get('full_package_required')),

@@ -220,6 +220,14 @@ Rectangle {
                 onClicked: page.updatePrimaryAction()
             }
             UiButton {
+                objectName: "updateOpenReleasePage"
+                theme: page.theme
+                quiet: true
+                visible: !!page.updateInfo.can_full_migrate && String(page.updateInfo.url || "").length > 0
+                text: page.tr("打开发布页")
+                onClicked: page.controller.openRelease()
+            }
+            UiButton {
                 objectName: "updateCancel"
                 theme: page.theme
                 quiet: true

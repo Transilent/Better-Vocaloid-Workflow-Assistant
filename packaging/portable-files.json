@@ -642,6 +642,10 @@
       "source": "src/full_package_migrator.py"
     },
     {
+      "file": "full_package_migrator_ui.py",
+      "source": "src/full_package_migrator_ui.py"
+    },
+    {
       "file": "lyrics_sources.py",
       "source": "src/lyrics_sources.py"
     },

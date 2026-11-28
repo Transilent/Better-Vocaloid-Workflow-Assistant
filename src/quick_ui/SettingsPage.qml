@@ -323,6 +323,8 @@ Rectangle {
             return tr("重启并安装")
         if (updateInfo.can_update)
             return tr("立即更新")
+        if (updateInfo.can_full_migrate)
+            return tr("一键下载并自动迁移")
         if (String(updateInfo.url || "").length > 0)
             return tr("打开发布页")
         return tr("立即更新")
@@ -335,6 +337,8 @@ Rectangle {
             controller.applyUpdate()
         else if (updateInfo.can_update)
             controller.downloadUpdate()
+        else if (updateInfo.can_full_migrate)
+            controller.startFullMigration()
         else if (String(updateInfo.url || "").length > 0)
             controller.openRelease()
         else
