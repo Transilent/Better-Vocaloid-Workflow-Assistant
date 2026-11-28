@@ -57,9 +57,9 @@ namespace VwaOnlineInstaller
 
         private static readonly string[] QwenWeightFiles =
         {
-            "dependencies\\vocal2midi\\experiments\\Qwen3-ASR-1.7B-dml\\qwen3_asr_1.7b_q4_k_m.gguf",
-            "dependencies\\vocal2midi\\experiments\\Qwen3-ASR-1.7B-dml\\audio_encoder_int8.onnx",
-            "dependencies\\vocal2midi\\experiments\\Qwen3-ASR-1.7B-dml\\token_embeddings.npy"
+            "dependencies\\vocal2midi\\experiments\\Qwen3-ASR-1.7B-dml\\qwen3_asr_encoder_backend.fp16.onnx",
+            "dependencies\\vocal2midi\\experiments\\Qwen3-ASR-1.7B-dml\\qwen3_asr_encoder_frontend.fp16.onnx",
+            "dependencies\\vocal2midi\\experiments\\Qwen3-ASR-1.7B-dml\\qwen3_asr_llm.f16.gguf"
         };
 
         private static readonly HashSet<string> InternalConfigKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -236,10 +236,8 @@ namespace VwaOnlineInstaller
                     ReleaseCatalog.FormatBytes(freeBytes), ReleaseCatalog.FormatBytes(needBytes)));
             }
 
-            string cacheRoot = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "VWA-Installer-Cache",
-                plan.Version + "-" + plan.Variant);
+            string cacheBase = Path.Combine(parentDir, ".vwa-installer-cache");
+            string cacheRoot = Path.Combine(cacheBase, plan.Version + "-" + plan.Variant);
             Directory.CreateDirectory(cacheRoot);
 
             bool isLocal = !string.IsNullOrEmpty(opts.ManifestBaseOverride);
@@ -348,8 +346,14 @@ namespace VwaOnlineInstaller
                         targetDir, plan.Version, opts.CreateStartMenu, opts.CreateDesktop);
                 }
 
-                // Clean up temporary merged archive (keep nothing giant in %LOCALAPPDATA% cache after success)
+                // Clean up temporary cache on target drive after successful install
                 try { Directory.Delete(cacheRoot, true); } catch (Exception) { }
+                try
+                {
+                    if (Directory.Exists(cacheBase) && Directory.GetFileSystemEntries(cacheBase).Length == 0)
+                        Directory.Delete(cacheBase, false);
+                }
+                catch (Exception) { }
 
                 emit(4, 100, 100, I18n.F("status_done", plan.Version));
             }
@@ -770,7 +774,14 @@ namespace VwaOnlineInstaller
             MigrateExistingUserData(targetDir, stagingDir, ct);
             string backupDir = targetDir + ".old-" + Process.GetCurrentProcess().Id;
             if (Directory.Exists(backupDir)) Directory.Delete(backupDir, true);
-            Directory.Move(targetDir, backupDir);
+            try
+            {
+                Directory.Move(targetDir, backupDir);
+            }
+            catch (Exception ex)
+            {
+                throw new IOException(I18n.T("err_dir_in_use"), ex);
+            }
             try
             {
                 Directory.Move(stagingDir, targetDir);

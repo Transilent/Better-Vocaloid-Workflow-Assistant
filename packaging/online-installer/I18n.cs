@@ -103,7 +103,8 @@ namespace VwaOnlineInstaller
                 { "err_disk_space", "目标磁盘剩余空间不足：当前可用 {0}，安装至少需要 {1}。" },
                 { "err_invalid_dir", "请选择有效的可写安装目录。" },
                 { "err_invalid_proxy", "自定义代理地址格式无效，请填写 http:// 或 https:// 开头的地址。" },
-                { "err_no_release", "尚未加载到版本元数据，请先点击「刷新版本」或切换网络线路。" }
+                { "err_no_release", "尚未加载到版本元数据，请先点击「刷新版本」或切换网络线路。" },
+                { "err_dir_in_use", "目标目录中的 VWA 程序或文件正在被占用，请先完全关闭 VWA 后点击「重试」。" }
             };
 
             var en = new Dictionary<string, string>
@@ -173,7 +174,8 @@ namespace VwaOnlineInstaller
                 { "err_disk_space", "Insufficient disk space: {0} free, at least {1} required." },
                 { "err_invalid_dir", "Please choose a valid writable install folder." },
                 { "err_invalid_proxy", "Invalid proxy URL. Use an http:// or https:// address." },
-                { "err_no_release", "Release metadata is not loaded yet. Click Refresh or switch route." }
+                { "err_no_release", "Release metadata is not loaded yet. Click Refresh or switch route." },
+                { "err_dir_in_use", "Files in the target folder are currently in use. Please close VWA completely and click Retry." }
             };
 
             var ja = new Dictionary<string, string>
@@ -243,7 +245,8 @@ namespace VwaOnlineInstaller
                 { "err_disk_space", "空き容量不足：現在の空き {0}、必要容量 {1} 以上。" },
                 { "err_invalid_dir", "書き込み可能なインストール先フォルダを指定してください。" },
                 { "err_invalid_proxy", "プロキシ URL が無効です。http:// または https:// で指定してください。" },
-                { "err_no_release", "リリース情報がまだ読み込まれていません。更新を押すか回線を切り替えてください。" }
+                { "err_no_release", "リリース情報がまだ読み込まれていません。更新を押すか回線を切り替えてください。" },
+                { "err_dir_in_use", "インストール先フォルダ内の VWA が使用中です。VWA を完全に終了してから再試行してください。" }
             };
 
             return new Dictionary<string, Dictionary<string, string>>

@@ -44,9 +44,9 @@ SOURCE_ALIASES = {
     'gh_proxy': 'gh-proxy', 'gh_fast': 'ghfast',
 }
 QWEN_WEIGHT_FILES = (
-    'dependencies/vocal2midi/experiments/Qwen3-ASR-1.7B-dml/qwen3_asr_1.7b_q4_k_m.gguf',
-    'dependencies/vocal2midi/experiments/Qwen3-ASR-1.7B-dml/audio_encoder_int8.onnx',
-    'dependencies/vocal2midi/experiments/Qwen3-ASR-1.7B-dml/token_embeddings.npy',
+    'dependencies/vocal2midi/experiments/Qwen3-ASR-1.7B-dml/qwen3_asr_encoder_backend.fp16.onnx',
+    'dependencies/vocal2midi/experiments/Qwen3-ASR-1.7B-dml/qwen3_asr_encoder_frontend.fp16.onnx',
+    'dependencies/vocal2midi/experiments/Qwen3-ASR-1.7B-dml/qwen3_asr_llm.f16.gguf',
 )
 MIGRATED_DIRS = ('jobs', 'user-presets', 'publish-packages', 'cache/accounts', 'dependencies/optional')
 _INTERNAL_CONFIG_KEYS = frozenset({

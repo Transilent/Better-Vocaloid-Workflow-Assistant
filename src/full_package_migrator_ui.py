@@ -130,6 +130,7 @@ def create_web_server(
         'message': '准备就绪，点击下方按钮开始下载并自动迁移。', 'exit_code': 0, 'closed': False, 'receipt': None,
     }
     speed_ref = {'t': time.monotonic(), 'b': 0}
+    client_hb = {'seen': False, 'last': time.monotonic()}
 
     def _on_progress(done: int, total: int, msg: str) -> None:
         now = time.monotonic()
@@ -198,6 +199,8 @@ def create_web_server(
                 self.wfile.write(html_bytes)
             elif self.path == '/api/status':
                 with lock:
+                    client_hb['seen'] = True
+                    client_hb['last'] = time.monotonic()
                     snap = dict(state)
                 self._send_json(200, snap)
             else:
@@ -243,12 +246,14 @@ def create_web_server(
 
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     server.daemon_threads = True
+    server._vwa_client_hb = client_hb
+    server._vwa_lock = lock
     return server, token, state, done_event
 
 
 def run_gui(
     source_root: Path, target_version: str, default_source: str = 'auto', *,
-    bridge_mode: bool = False, open_browser: bool = True,
+    bridge_mode: bool = False, open_browser: bool = True, idle_tab_timeout: float = 20.0,
 ) -> int:
     """Launch the zero-dependency local Web UI migrator (works on Windows Embeddable Python)."""
     server, _token, state, done_event = create_web_server(
@@ -262,6 +267,21 @@ def run_gui(
             webbrowser.open(url)
         except OSError:
             pass
+    if idle_tab_timeout and idle_tab_timeout > 0:
+        def _idle_watchdog() -> None:
+            hb = getattr(server, '_vwa_client_hb', None)
+            lk = getattr(server, '_vwa_lock', None)
+            while not done_event.wait(timeout=1.0):
+                if hb is None or lk is None:
+                    continue
+                with lk:
+                    seen = bool(hb.get('seen'))
+                    stale = (time.monotonic() - float(hb.get('last', 0.0))) >= idle_tab_timeout
+                    busy = state.get('state') == 'running'
+                if seen and stale and not busy:
+                    done_event.set()
+                    return
+        threading.Thread(target=_idle_watchdog, daemon=True).start()
     try:
         done_event.wait()
     except KeyboardInterrupt:
