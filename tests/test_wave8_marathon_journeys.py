@@ -280,16 +280,19 @@ class Wave8Qt6MarathonAndVisualTests(unittest.TestCase):
         self.app.processEvents()
         return bool(predicate())
 
-    def _teardown_workspace(self, engine, window, bridge):
+    def _teardown_workspace(self, engine, window, bridge, modes=None):
+        import gc
         from PySide6.QtCore import QCoreApplication, QEvent
 
         window.close()
-        engine.deleteLater()
-        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-        self.app.processEvents()
+        if modes is not None:
+            modes.close()
         bridge.close()
+        engine.deleteLater()
+        self.app.processEvents()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         self.app.processEvents()
+        gc.collect()
 
     def _walk_overflows(self, root_item, max_w: float):
         from PySide6.QtCore import QPointF
@@ -415,7 +418,7 @@ class Wave8Qt6MarathonAndVisualTests(unittest.TestCase):
                      mock.patch.object(appearance_state, 'save_appearance', lambda _v: None):
                     for vw, vh, sc in ((1280, 720, 100), (1050, 620, 130), (960, 640, 130)):
                         before_w = len(self.qt_warnings)
-                        engine, window, bridge, _ = create_workspace(self.app, viewport=(vw, vh), scale=sc)
+                        engine, window, bridge, modes = create_workspace(self.app, viewport=(vw, vh), scale=sc)
                         try:
                             self.assertEqual(i18n.current_language(), lang)
                             self.assertEqual(i18n.tr('调音工坊'), expected_workshop[lang])
@@ -436,7 +439,7 @@ class Wave8Qt6MarathonAndVisualTests(unittest.TestCase):
                                             f'{lang} {theme} {vw}x{vh}@{sc}% {route}/{pane}: {len(ov)} {ov[:3]}'
                                         )
                         finally:
-                            self._teardown_workspace(engine, window, bridge)
+                            self._teardown_workspace(engine, window, bridge, modes)
                         new_w = [
                             w for w in self.qt_warnings[before_w:]
                             if any(k in w for k in ('QML', 'TypeError', 'ReferenceError', 'Binding loop'))
@@ -458,7 +461,7 @@ class Wave8Qt6MarathonAndVisualTests(unittest.TestCase):
         before_w = len(self.qt_warnings)
         with mock.patch.object(appearance_state, 'load_appearance', return_value=fake_appearance), \
              mock.patch.object(appearance_state, 'save_appearance', lambda _v: None):
-            engine, window, bridge, _ = create_workspace(self.app, viewport=(1280, 720), scale=100)
+            engine, window, bridge, modes = create_workspace(self.app, viewport=(1280, 720), scale=100)
             try:
                 # 5 full rounds across all 13 routes/panes = 65 navigations
                 for round_idx in range(5):
@@ -486,7 +489,7 @@ class Wave8Qt6MarathonAndVisualTests(unittest.TestCase):
                 bridge.support.skipTutorial()
                 self._pump(3)
             finally:
-                self._teardown_workspace(engine, window, bridge)
+                self._teardown_workspace(engine, window, bridge, modes)
 
         self.assertTrue(bridge._closed)
         new_w = [

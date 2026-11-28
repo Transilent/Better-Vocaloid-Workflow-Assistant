@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vwa"
-version = "2.1.0"
+version = "3.0.0"
 description = "Vocaloid Workflow Assistant — desktop vocal production, tuning, chorus, mixdown and publishing suite."
 readme = "README.md"
 requires-python = ">=3.12"

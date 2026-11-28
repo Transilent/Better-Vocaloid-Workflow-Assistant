@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(vwa_native VERSION 2.1.0 LANGUAGES C CXX)
+project(vwa_native VERSION 3.0.0 LANGUAGES C CXX)
 
 include(FetchContent)
 include(CTest)

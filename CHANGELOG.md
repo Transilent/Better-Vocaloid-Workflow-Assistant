@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 3.0.0 — 2026-11-28
+
+### 主要新增功能
+- **全新修音与合唱工作台（Chorus Workbench）**：支持多轨人声干声与 MIDI 对照修音、逐句复核与精准手绘音高、音节力度调节、Signalsmith Stretch 原生高保真连续变调（8 kHz tonality / 共振峰保留）、CAS 缓存与分轨干声交付。
+- **独立工程格式安全互转页（Project Converter）**：支持 12 种歌声合成工程（SVP/SV2、USTX、VPR、VSQX、ACEP、UFData、MIDI 等）互转、轨拆分、回读体检与时间轴 LRC/SRT 歌词导出，绝不覆盖源文件。
+- **简易混音升级至 16 轨原生实时音频引擎**：新增 WASAPI 音频设备枚举与热插拔自动重连、原生压限/输出 DLL、60fps FBO 波形与草稿崩溃恢复。
+- **BS-RoFormer 双运行库共存与实验性 AMD WebGPU ONNX 后端**：
+  - 原版 PyTorch BS-RoFormer 支持 GPU (CUDA) 与 CPU 独立共存与权重复用；
+  - 新增默认不启用的独立实验组件 **BS-RoFormer ONNX（10s FP16 / 20s FP16）**（致谢 `@AU-ki`），隔离运行 `onnxruntime-webgpu 1.27.0`，针对 AMD 显卡按显存智能推荐档位，权重已镜像托管至主仓库。
+- **组件页管理状态全面清晰化**：新增左侧“使用中”与详情页“当前已选用”标识、分档就绪标签、安装/校验按钮显式标明目标档位、实时进度条，并修复浅色主题胶囊对比度与窄屏折行问题。
+- **全量 UX 与基础设施升级**：4 场景新手引导与 11 步非阻塞导览、全局快捷命令（`Ctrl+K`）与快捷键速查（`Ctrl+/`）、窗口级拖拽路由、任务栏进度、Toast 提示栈、Happy Eyeballs 镜像竞速、批量准备队列、SQLite 任务索引与 Windows MiniDump 捕获。
+
+### 关键修复与兼容性
+- 解除 Synthesizer V Studio 2 工程版本硬上限，支持 `version: 203+` 独立音符组读写，同时保留共享组与裁切组的只读保护。
+- 为 Vocal2Midi v1/v2 的 RMVPE 推理新增 DirectML 显卡重置（`0x887A0005` 等）与中文系统 GBK 解码异常自动回退 CPU，并接入 `soxr` 快速重采样与 Qwen 显存复用。
+- 准备页显卡选择器显示真实 GPU 名称与显存容量；修复 13 个 QML 文件窗口退出时的 `quickTranslation` 空指针隐患。
+- **全版本二跳全量更新与自动数据迁移器**：支持旧版用户通过一跳桥接进入全量包下载迁移器，校验下载 3.0.0 Full/JPN 分卷包后自动迁移 `jobs/`、`config.json`、`user-presets/`、`cache/accounts/` 与已下载的可选模型并启动新版本；同步完善 Inno Setup 6 安装器（支持 >2 GiB 分片与升级/卸载保留用户数据）。
+- **安全与运行库升级**：便携版 `runtime/python` 升级 `certifi 2026.10.18`、`urllib3 2.8.0`、`msgpack 1.2.3`、`pip 26.2`、`setuptools 84.1.0`，MCP 锁文件升级 `opentelemetry-api 1.45.2`，清零全部 10 条 Dependabot 安全告警；新增 CodeQL SAST、AST 安全反序列化守卫与 CI 卫生检查。
+
 ## 2.1.0 — 2026-11-20
 
 - 在调音卷帘内改词、移动或缩放音符，并在参数轨用曲线笔、直线、节点和橡皮编辑音高。单轨检查器显示所选音符可写的原生参数。
