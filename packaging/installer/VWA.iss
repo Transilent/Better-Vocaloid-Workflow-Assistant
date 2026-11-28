@@ -58,9 +58,9 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; Never overwrite existing user config, jobs, presets, accounts, or optional downloaded models on upgrade
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "config.json,jobs\*,user-presets\*,cache\*,publish-packages\*,dependencies\optional\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 #if FileExists(SourceDir + "\config.json")
-Source: "{#SourceDir}\config.json"; DestDir: "{app}"; DestName: "config.json"; Flags: onlyifdoesntexist
+Source: "{#SourceDir}\config.json"; DestDir: "{app}"; DestName: "config.json"; Flags: onlyifdoesntexist uninsneveruninstall
 #elif FileExists(SourceDir + "\config.example.json")
-Source: "{#SourceDir}\config.example.json"; DestDir: "{app}"; DestName: "config.json"; Flags: onlyifdoesntexist
+Source: "{#SourceDir}\config.example.json"; DestDir: "{app}"; DestName: "config.json"; Flags: onlyifdoesntexist uninsneveruninstall
 #endif
 
 [Icons]
