@@ -8,7 +8,30 @@ sys.path.insert(0, str(ROOT))
 sys.dont_write_bytecode = True
 
 
+def _maybe_run_full_migrator():
+    """If a 2-hop full-package migration handoff is pending, open the migrator first."""
+    import json
+
+    handoff = ROOT / 'cache/updates/full-migrator-handoff.json'
+    if not handoff.is_file():
+        return None
+    try:
+        data = json.loads(handoff.read_text(encoding='utf-8-sig'))
+        target_version = str(data.get('target_version') or '').strip()
+        source = str(data.get('source') or 'auto').strip()
+        if not target_version:
+            return None
+        import full_package_migrator
+        rc = full_package_migrator.run_gui(ROOT, target_version, source)
+        return None if rc == 2 else rc
+    except Exception:
+        return None
+
+
 def main(argv=None):
+    migrator_rc = _maybe_run_full_migrator()
+    if migrator_rc is not None:
+        return migrator_rc
     from quick_app import main as start
     args = sys.argv[1:] if argv is None else argv
     # Existing shortcut arguments still resolve to the single desktop entry.

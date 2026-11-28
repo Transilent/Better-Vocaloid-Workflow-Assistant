@@ -14,21 +14,21 @@
     "fp16_10s": {
       "name": "bs_roformer_karaoke_frazer_becruily.fp16_10s.onnx",
       "precision": "fp16_10s",
-      "url": "https://github.com/AU-ki/Better-Vocaloid-Workflow-Assistant/releases/download/bs-roformer-onnx/bs_roformer_karaoke_frazer_becruily.fp16_10s.onnx",
+      "url": "https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/download/bs-roformer-onnx-v1/bs_roformer_karaoke_frazer_becruily.fp16_10s.onnx",
       "sha256": "d5c872b40246a7ca04080fcb958cb003cdbddd180c5bb887b0b28396016b9ae0",
       "bytes": 133548886
     },
     "fp16": {
       "name": "bs_roformer_karaoke_frazer_becruily.fp16.onnx",
       "precision": "fp16",
-      "url": "https://github.com/AU-ki/Better-Vocaloid-Workflow-Assistant/releases/download/bs-roformer-onnx/bs_roformer_karaoke_frazer_becruily.fp16.onnx",
+      "url": "https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/download/bs-roformer-onnx-v1/bs_roformer_karaoke_frazer_becruily.fp16.onnx",
       "sha256": "51d62806b4bf7b809c59b3b1951c870a55ad2f5a4c835632ab30bfb7d05ef240",
       "bytes": 133660420
     }
   },
   "config": {
     "name": "config.yaml",
-    "url": "https://github.com/AU-ki/Better-Vocaloid-Workflow-Assistant/releases/download/bs-roformer-onnx/config.yaml",
+    "url": "https://github.com/Transilent/Better-Vocaloid-Workflow-Assistant/releases/download/bs-roformer-onnx-v1/config.yaml",
     "sha256": "1d3b58b473025183d0d3c91e7a444cb5f1418d9f34e8f46b8d2fb10d2cc8ab34",
     "bytes": 1903
   },

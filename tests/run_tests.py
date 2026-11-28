@@ -113,6 +113,7 @@ shared_tests = (
     'test_amd_gpu_foundation.py',
     'test_hotfix_v211_regressions.py',
     'test_roformer_onnx_experimental.py',
+    'test_full_package_migrator.py',
 )
 
 # L1 integration tests that depend on external multi-GB runtime packages/binaries
