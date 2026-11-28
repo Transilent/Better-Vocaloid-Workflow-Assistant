@@ -28,6 +28,20 @@ Reused runtime files are checked by size and SHA-256 before staging and again be
 
 Private state schemas written by released clients remain readable. Compatibility identifiers remain where installed clients expect them, so the visible rename does not require a destructive reset of settings, tasks or sign-in profiles. Unchanged model files remain in place.
 
+## 3.0.0+ 2-Hop Full-Package Auto-Migrator & Online Installer
+
+When a major release upgrades the base portable runtime (changing the `dependencies/manifest.json` SHA-256, as in v3.0.0), VWA uses a dual **2-Hop Auto-Migrator + Online Bootstrapper Installer** architecture:
+
+1. **Hop-1 compatibility bridges (matched to frozen client schemas)**:
+   - `v2.0.0` / `v2.1.0` (Quick): consumes `program_update` (`VWA-Program-Update.zip`).
+   - `v1.0.0` / `v1.1.0` (Widgets): consumes the `updates` catalog route (`VWA-App-Update-v3.0.0.zip` strict 3-file bootstrap + `VWA-Runtime-Upgrade-v3.0.0.zip` bridge payload).
+   - `v0.4.0`: falls back to top-level `update` (`BVWA-App-Update.zip`).
+2. **Hop-2 zero-dependency loopback Web UI migrator (`full_package_migrator_ui.py`)**:
+   - Runs directly on Windows Embeddable Python (zero `tkinter` or Qt coupling), bound strictly to `127.0.0.1` with a per-session CSRF token and an idle-tab watchdog.
+   - Auto-detects Full vs JPN, races mirrors with multi-threaded HTTP Range resume and SHA-256 verification, extracts into a new folder, migrates `config.json` (rewriting old paths while preserving internal keys), `jobs/`, `user-presets/`, `cache/accounts/`, `publish-packages/`, `dependencies/optional/`, and downloaded Qwen3-ASR weights, and launches v3.0.0 while keeping the old folder intact.
+3. **Online Bootstrapper Installer (`VWA-Online-Installer-3.0.0-x64.exe`)**:
+   - Recommended for new users and earliest cohorts (`v0.3.x` / `v0.4.1`); single zero-dependency executable with Full/JPN selection, target-drive chunk resume cache, and non-destructive user-data preservation on existing folders.
+
 ## Frozen first hop and legacy aliases
 
 The compatibility first hop is frozen to exactly three files: `app.py`, `version.json`, and `tools/update_apply.py`. `version.json` binds that small archive to the target version, while the replacement `app.py` starts the migration window before the newer display modules are installed. The first hop verifies itself, prepares the matching runtime/program delta, and installs the rest of the transaction before one restart.
