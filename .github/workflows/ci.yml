@@ -92,7 +92,8 @@ jobs:
             'tests/test_wave8_marathon_journeys.py',
             'tests/test_amd_gpu_foundation.py',
             'tests/test_hotfix_v211_regressions.py',
-            'tests/test_roformer_onnx_experimental.py'
+            'tests/test_roformer_onnx_experimental.py',
+            'tests/test_full_package_migrator.py'
           )
           foreach ($t in $tests) {
             Write-Host "=== Running $t ==="

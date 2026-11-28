@@ -638,6 +638,10 @@
       "source": "src/launch.py"
     },
     {
+      "file": "full_package_migrator.py",
+      "source": "src/full_package_migrator.py"
+    },
+    {
       "file": "lyrics_sources.py",
       "source": "src/lyrics_sources.py"
     },

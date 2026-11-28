@@ -1,12 +1,20 @@
-; Inno Setup 6 Per-User Installer Template for VWA (Vocaloid Workflow Assistant)
-; Builds a non-admin Windows installer alongside the portable ZIP distribution.
-; Usage: iscc /DAppVersion=2.1.0 /DSourceDir=path\to\staged\VWA packaging\installer\VWA.iss
+; Inno Setup 6 Per-User Installer for VWA (Vocaloid Workflow Assistant)
+; Supports >2 GiB Full packages via 1900 MiB DiskSpanning slices compatible with GitHub Releases.
+; Usage:
+;   iscc /DAppVersion=3.0.0 /DSourceDir=path\to\staged\VWA /DVariantSuffix= packaging\installer\VWA.iss
+;   iscc /DAppVersion=3.0.0 /DSourceDir=path\to\staged\VWA-JPN /DVariantSuffix=-JPN packaging\installer\VWA.iss
 
 #ifndef AppVersion
-  #define AppVersion "2.1.0"
+  #define AppVersion "3.0.0"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\..\dist\VWA"
+#endif
+#ifndef VariantSuffix
+  #define VariantSuffix ""
+#endif
+#ifndef OutputDir
+  #define OutputDir "..\..\dist\installer"
 #endif
 
 [Setup]
@@ -23,21 +31,32 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 Compression=lzma2/fast
 SolidCompression=no
-OutputBaseFilename=VWA-Setup-{#AppVersion}-x64
-WizardStyle=modern
+DiskSpanning=yes
+SlicesPerDisk=1
+DiskSliceSize=1992294400
+DisableDirPage=no
 DisableProgramGroupPage=yes
+CloseApplications=yes
+RestartApplications=no
+OutputDir={#OutputDir}
+OutputBaseFilename=VWA-Setup-{#AppVersion}-x64{#VariantSuffix}
+WizardStyle=modern
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
+#if FileExists(CompilerPath + "Languages\ChineseSimplified.isl")
 Name: "chinesesimplified"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
+#endif
+#if FileExists(CompilerPath + "Languages\Japanese.isl")
 Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
+#endif
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-; Never overwrite existing user config, jobs, or presets on in-place upgrade
-Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "config.json,jobs\*,user-presets\*,cache\*"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Never overwrite existing user config, jobs, presets, accounts, or optional downloaded models on upgrade
+Source: "{#SourceDir}\*"; DestDir: "{app}"; Excludes: "config.json,jobs\*,user-presets\*,cache\*,publish-packages\*,dependencies\optional\*"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#SourceDir}\config.example.json"; DestDir: "{app}"; DestName: "config.json"; Flags: onlyifdoesntexist
 
 [Icons]
@@ -49,5 +68,6 @@ Name: "{autodesktop}\VWA"; Filename: "{app}\VWA.exe"; Tasks: desktopicon
 Filename: "{app}\VWA.exe"; Description: "{cm:LaunchProgram,VWA}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
-; Keep user jobs/, user-presets/, and config.json intact unless user removes folder manually.
-Type: filesandordirs; Name: "{app}\cache"
+; Keep user jobs/, user-presets/, config.json, cache/accounts/, and dependencies/optional/ intact.
+Type: filesandordirs; Name: "{app}\cache\updates"
+Type: filesandordirs; Name: "{app}\work"
