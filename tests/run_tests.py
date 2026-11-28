@@ -115,6 +115,7 @@ shared_tests = (
     'test_roformer_onnx_experimental.py',
     'test_full_package_migrator.py',
     'test_online_installer.py',
+    'test_data_migrator.py',
 )
 
 # L1 integration tests that depend on external multi-GB runtime packages/binaries
